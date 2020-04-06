@@ -79,7 +79,7 @@ def GEM_expectation(tau1, tau2, K):
         tau1: 1 x K, positive numbers, last number is 1 
         tau2: 1 x K, non-negative numbers, last number is 0
     Outputs:
-        theta: 1 x K
+        E(theta(k)) where theta(k) = Beta(tau1(k), tau2(k)) prod{i=1}{k-1} (1-Beta(tau1(k), tau2(k)))
     """
     # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
     # and they are independent because of mean-field.
@@ -93,11 +93,11 @@ def GEM_expectation(tau1, tau2, K):
     """
     print("Em1p shape") print(Em1p.shape)
     """
-    ratiop = Ep/Em1p # shape (1 x K)
+    ratiop = Ep/Em1p # shape (1, K)
     """
     print("ratiop shape") print(ratiop.shape) print(cumu[0,:(self._K-1)].shape)
     """
-    theta = n.multiply(ratiop, cumu) # shape (1 x K)
+    theta = n.multiply(ratiop, cumu) # shape (1, K)
     """
     print(theta)
     """

@@ -5,8 +5,8 @@ import argparse
 import topicmodelvb
 import corpus
 
-def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method, Einit):
-    savedir = "results/" + method + "K" + str(K) + "_D" + str(batchsize) + "_Einit" + Einit + "_" + inroot + "_" + heldoutroot
+def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method):
+    savedir = "results/" + method + "K" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     if (not topicpath is None):
         savedir = savedir + "/warm/" + topicpath
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
@@ -20,15 +20,15 @@ def main():
     Load a wikipedia corpus in batches from disk and run either LDA or SB-LDA.
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument("--method", help="type of topic model")
-    parser.add_argument("--inroot", help="training corpus root name")
-    parser.add_argument("--heldoutroot", help="testing corpus root name")
-    parser.add_argument("--topicpath",help="path to pre-trained topics for warm-start. Don't set if numtopics is a list")
-    parser.add_argument("--Einit", help="which set of variational parameters to initialize in E-step")
-    parser.add_argument("--seed", help="seed for replicability",type=int)
-    parser.add_argument("--maxiter", help="total number of mini-batches to train",type=int)
-    parser.add_argument("--batchsize", help="mini-batch size",type=int)
-    parser.add_argument("--numtopics", help="maximum number of topics, expecting a list",nargs='+',type=int)
+    parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
+    parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list",nargs='+',type=int, default=[100])
+    parser.add_argument("--T", help="cap of document-level number of topics",type=int, default=10)
+    parser.add_argument("--inroot", help="training corpus root name", default='wiki10k')
+    parser.add_argument("--heldoutroot", help="testing corpus root name", default='wiki1k')
+    parser.add_argument("--topicpath",help="path to pre-trained topics for warm-start. Don't set if numtopics is a list", default=None)
+    parser.add_argument("--seed", help="seed for replicability",type=int, default=0)
+    parser.add_argument("--maxiter", help="total number of mini-batches to train",type=int, default=1000)
+    parser.add_argument("--batchsize", help="mini-batch size",type=int, default=20)
     args = parser.parse_args()
     
     # The rootname, for instance wiki10k
@@ -55,9 +55,6 @@ def main():
     # The number of documents to analyze each iteration
     batchsize = args.batchsize
 
-    # The number of topics
-    K = args.numtopics
-
     # Total number of batches
     if args.maxiter is None:
         max_iter = 1000
@@ -75,31 +72,26 @@ def main():
     else:
         topicfile = topicpath + ".dat"
         
-    # Which variational parameters to initialize in E-step
-    if (args.Einit is None):
-        Einit = "proportions"
-    else:
-        Einit = args.Einit
-        
      # load the held-out documents
     (howordids,howordcts) = \
                     corpus.get_batch_from_disk(heldoutroot, D_, None)
 
     # experiments for different number of topics
-    Klist = args.numtopics
+    Klist = args.K
+    T = args.T
     for K in Klist:
         LL_list = []
         # Different constructors for different methods
         method = args.method
-        if (method == "lda"):
-            lda = topicmodelvb.LDA(vocab, K, topicfile, Einit, D, 1, 0.01, 1024., 0.7)
-        elif (method == "sblda"):
-            lda = topicmodelvb.SB_LDA(vocab, K, topicfile, Einit, D, 1, 0.01, 1024., 0.7)
+        if (method == "nhdp"):
+            tm = topicmodelvb.NNFA_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
+        elif (method == "thdp"):
+            tm = topicmodelvb.T_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
         train_time = 0
-        savedir, LLsavename = makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method, Einit)
+        savedir, LLsavename = makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method)
        
         if (not topicpath is None):
-            initLL = lda.log_likelihood_docs(howordids,howordcts)
+            initLL = tm.log_likelihood_docs(howordids,howordcts)
             print("Under warm start topics, current model has held-out LL: %f" %initLL)
         for iteration in range(0, max_iter):
             t0 = time.time()
@@ -107,25 +99,29 @@ def main():
             (wordids, wordcts) = \
                 corpus.get_batch_from_disk(inroot, D, batchsize)
             # Give them to SB_LDA
-            _ = lda.update_lambda(wordids, wordcts)
+            tm.do_m_step(wordids, wordcts)
             t1 = time.time()
             train_time += t1 - t0
             # Compute average log-likelihood on held-out corpus every so number of iterations
             if (iteration % 10 == 0):
                 t0 = time.time()
-                LL = lda.log_likelihood_docs(howordids,howordcts)
+                LL = tm.log_likelihood_docs(howordids,howordcts)
                 t1 = time.time()
                 test_time = t1 - t0
                 print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f,  test time = %f,  held-out log-likelihood = %f' % \
-                    (seed, iteration, lda._rhot, train_time, test_time, LL))
+                    (seed, iteration, tm._rhot, train_time, test_time, LL))
                 LL_list.append([iteration, train_time, LL])
                 numpy.savetxt(LLsavename, LL_list)
             # save topics every so number of iterations
             if (seed == 0):
                 if (iteration % 400 == 0):
                     lambdaname = (savedir + "/lambda-%d.dat") % iteration
-                    numpy.savetxt(lambdaname, lda._lambda)
+                    numpy.savetxt(lambdaname, tm._lambda)
+                    aname = (savedir + "/a-%d.dat") % iteration 
+                    numpy.savetxt(aname, tm._a)
+                    bname = (savedir + "/b-%d.dat") % iteration 
+                    numpy.savetxt(bname, tm._b)
 
-        print("Finished experiment with %d-topic model" %K)
+        print("Finished experiment with %d-topic %s model" %(K,method))
 if __name__ == '__main__':
     main()
