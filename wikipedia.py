@@ -5,8 +5,8 @@ import argparse
 import topicmodelvb
 import corpus
 
-def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method):
-    savedir = "results/" + method + "K" + str(K) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
+def makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method):
+    savedir = "results/" + method + "K" + str(K) + "_T" + str(T) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     if (not topicpath is None):
         savedir = savedir + "/warm/" + topicpath
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
@@ -17,12 +17,14 @@ def makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method):
 
 def main():
     """
-    Load a wikipedia corpus in batches from disk and run either LDA or SB-LDA.
+    Load a wikipedia corpus in batches from disk and run either T-HDP or N-HDP.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
     parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list",nargs='+',type=int, default=[100])
-    parser.add_argument("--T", help="cap of document-level number of topics",type=int, default=10)
+    parser.add_argument("--T", help="cap of document-level number of topics",type=int, default=20)
+    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood",type=int, default=50)
+    parser.add_argument("--topiciter", help="number of iterations between saving topics",type=int, default=100)
     parser.add_argument("--inroot", help="training corpus root name", default='wiki10k')
     parser.add_argument("--heldoutroot", help="testing corpus root name", default='wiki1k')
     parser.add_argument("--topicpath",help="path to pre-trained topics for warm-start. Don't set if numtopics is a list", default=None)
@@ -61,6 +63,12 @@ def main():
     else:
         max_iter = args.maxiter
     
+    # Spacing between saving topic 
+    topiciter = args.topiciter
+    
+    # Spacing between evaluating held-out log-likelihood
+    LLiter = args.LLiter
+    
     # Our vocabulary
     vocab = open('./dictnostops.txt').readlines()
     W = len(vocab)
@@ -88,7 +96,7 @@ def main():
         elif (method == "thdp"):
             tm = topicmodelvb.T_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
         train_time = 0
-        savedir, LLsavename = makesaves(K, batchsize, inroot, heldoutroot, seed, topicpath, method)
+        savedir, LLsavename = makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method)
        
         if (not topicpath is None):
             initLL = tm.log_likelihood_docs(howordids,howordcts)
@@ -103,7 +111,7 @@ def main():
             t1 = time.time()
             train_time += t1 - t0
             # Compute average log-likelihood on held-out corpus every so number of iterations
-            if (iteration % 10 == 0):
+            if (iteration % LLiter == 0):
                 t0 = time.time()
                 LL = tm.log_likelihood_docs(howordids,howordcts)
                 t1 = time.time()
@@ -114,14 +122,15 @@ def main():
                 numpy.savetxt(LLsavename, LL_list)
             # save topics every so number of iterations
             if (seed == 0):
-                if (iteration % 400 == 0):
+                if (iteration % topiciter == 0):
                     lambdaname = (savedir + "/lambda-%d.dat") % iteration
                     numpy.savetxt(lambdaname, tm._lambda)
                     aname = (savedir + "/a-%d.dat") % iteration 
                     numpy.savetxt(aname, tm._a)
-                    bname = (savedir + "/b-%d.dat") % iteration 
-                    numpy.savetxt(bname, tm._b)
+                    if (method == "thdp"):
+                        bname = (savedir + "/b-%d.dat") % iteration 
+                        numpy.savetxt(bname, tm._b)
 
-        print("Finished experiment with %d-topic %s model" %(K,method))
+        print("Finished experiment with %d-topic %s model" %(K, T, method))
 if __name__ == '__main__':
     main()
