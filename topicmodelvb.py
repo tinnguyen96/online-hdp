@@ -69,7 +69,7 @@ class _TopicModel:
         
         return
     
-        def init_doc(self, ids, cts):
+    def init_doc(self, ids, cts):
         """
         Inputs:
             ids: unique word indices
@@ -86,7 +86,7 @@ class _TopicModel:
         initzetad = n.exp(tempzetad-logzetadnorm) # shape (self._K,)
         # zeta's shape: (self._T, self._K). The rows are identical.
         zetad = n.multiply(n.ones((self._T, self._K)), initzetad[n.newaxis, :]) 
-        
+
         ## phi
         # phi's shape: (self._T, len(ids))
         tempphid = n.dot(zetad, Elogbetad)
@@ -94,12 +94,12 @@ class _TopicModel:
         logphid = tempphid - logphidnorm[n.newaxis,:] # (self._T, len(ids))
         # normalize across rows. The columns are identical.
         phid = n.exp(logphid)
-        
+
         ## gamma
         gamma1d = n.ones(self._T)
         gamma2d = self._alpha*n.ones(self._T)
         gamma2d[-1] = 0
-        
+
         return (zetad, phid, gamma1d, gamma2d)
     
     def do_e_step(self, wordids, wordcts):
@@ -121,8 +121,7 @@ class _TopicModel:
         sstats = {}
         sstats["lambda"] = n.zeros(self._lambda.shape)
         sstats["a"] = n.zeros(self._a.shape)
-        sstats["b"] = n.zeros(self._b.shape)
-        
+
         it = 0
         meanchange = 0
         converged = False
@@ -158,7 +157,7 @@ class _TopicModel:
                 zetad = n.exp(logzetad)
                 
                 # word assignment update
-                Elogpid = expect_log_sticks(gamma1d, gamma2d, self._Tmask.tranpose()) # shape (self._T,)
+                Elogpid = expect_log_sticks(gamma1d, gamma2d) # shape (self._T,)
                 tempphid = n.dot(zetad, Elogbetad) # shape (self._T, len(ids))
                 tempphid = tempphid + Elogpid[:, n.newaxis]
                 logphidnorm = logsumexp(tempphid, axis=0)
@@ -182,7 +181,6 @@ class _TopicModel:
             # statistics for the M step.
             sstats["lambda"][:, ids] += n.multiply(n.dot(zetad.transpose(), phid), cts)
             sstats["a"] += (n.sum(zetad,axis=0)).flatten()
-            sstats["b"] += n.sum(n.dot(self._Kmask, zetad.transpose()), axis=1)
 
         return (zeta, gamma1, gamma2), sstats
 
@@ -202,7 +200,7 @@ class _TopicModel:
         gamma1 = varparams[1][0] # shape (self._T,)
         gamma2 = varparams[2][0] # shape (self._T,)
         
-        sndlevel = GEM_expectation(gamma1[n.newaxis,:], gamma2[n.newaxis,:], self._T) # shape (1, self._T)
+        sndlevel = GEM_expectation(gamma1[n.newaxis,:], gamma2[n.newaxis,:]) # shape (1, self._T)
         thetad = n.dot(sndlevel, zeta) # shape (1, self._K)
         
         return thetad
@@ -301,10 +299,10 @@ class T_HDP(_TopicModel):
         self._ainc = n.zeros(self._K)
         self._b = self._omega*n.ones(self._K)
         self._b[-1] = 0
-        self._Elogtheta = expect_log_sticks(self._a, self._b, self._Kmask.tranpose()) # shape (self._K,)
+        self._Elogtheta = expect_log_sticks(self._a, self._b) # shape (self._K,)
         
         t1 = time.time()
-        print("Time to initialize topic model using %d topics is %.2f" %(self._K, t1-t0))
+        print("Time to initialize %d-topic model is %.2f" %(self._K, t1-t0))
         return
     
     def do_m_step(self, wordids, wordcts, reorder=True):
@@ -354,7 +352,7 @@ class T_HDP(_TopicModel):
         self._a[-1] = 1
         self._b = self._omega + n.dot(self._Kmask, self._ainc)
         self._b[-1] = 0
-        self._Elogtheta = expect_log_sticks(self._a, self._b, self._Kmask.tranpose()) # shape (self._K,)
+        self._Elogtheta = expect_log_sticks(self._a, self._b) # shape (self._K,)
         
         self._updatect += 1
 
@@ -425,7 +423,7 @@ class T_HDP(_TopicModel):
                 print(self._a)
                 print(self._b)
                 """
-                Elogtheta = expect_log_sticks(self._a, self._b, self._Kmask.tranpose()) # shape (self._K,)
+                Elogtheta = expect_log_sticks(self._a, self._b) # shape (self._K,)
                 # By default, n.multiply(phid, cts) multiplies every column of phid 
                 # by the same number in cts 
                 tempzetad = n.dot(n.multiply(phid, cts), Elogbetad.transpose()) # shape (self._T, self._K)
@@ -435,7 +433,7 @@ class T_HDP(_TopicModel):
                 zetad = n.exp(logzetad)
                 
                 # word assignment update
-                Elogpid = expect_log_sticks(gamma1d, gamma2d, self._Tmask.tranpose()) # shape (self._T,)
+                Elogpid = expect_log_sticks(gamma1d, gamma2d) # shape (self._T,)
                 tempphid = n.dot(zetad, Elogbetad) # shape (self._T, len(ids))
                 tempphid = tempphid + Elogpid[:, n.newaxis]
                 logphidnorm = logsumexp(tempphid, axis=0)
@@ -553,15 +551,15 @@ class N_HDP(_TopicModel):
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
         
-        self._a = (1-rhot)*self._a + 
-            rhot * (self._omega/self._K + self.D * sstats["a"] / len(wordids)
+        self._a = (1-rhot)*self._a + \
+            rhot * (self._omega/self._K + self._D * sstats["a"] / len(wordids))
         self._Elogtheta = dirichlet_expectation(self._a) # shape (self._K,)
                     
         self._updatect += 1
 
         return varparams
     
-def sanity_one_batch(seed, K, T, topicpath):
+def sanity_E_step(seed, K, T, topicpath):
     """
     Examine effect of THDP E-step's on a document and the resulting M-step 
     on T_HDP.
@@ -591,29 +589,50 @@ def sanity_one_batch(seed, K, T, topicpath):
     _ = tm.debug_e_step(wordids, wordcts)
     return
 
-def sanity_M_step(seed, K, topicpath):
-    ## load topics
+def sanity_atomic(seed=0, K=100, T=20, topicpath=None, evalLL=False):
+    """
+    Atomic routine (sample 1 batch, M-step, evaluate held-out LL).
+    Mainly for profiling purposes.
+    Inputs:
+        seed: seed for replicability
+        K: cap on corpus-level number of topics
+        T: cap on per-document number of topics
+        topicpath: file path of pre-trained topics for warm-start training
+        evalLL: whether held-out LL should be evaluated
+    Outputs:
+    """
     inroot = "wiki10k"
     infile = inroot + "_wordids.csv"
+    heldoutroot = "wiki1k"
+    heldoutfile =  heldoutroot + "_wordids.csv"
+    
     with open(infile) as f:
         D = sum(1 for line in f)
-    vocab = open('./dictnostops.txt').readlines()
-    tm = SB_LDA(vocab, K, topicpath, D, 1, 0.01, 1024., 0.7)
+    with open(heldoutfile) as f:
+        D_ = sum(1 for line in f)
+        
+    # load the held-out documents
+    (howordids,howordcts) = \
+                    get_batch_from_disk(heldoutroot, D_, None)
     
-    ## Do 10 M-steps based on 10 sampled documents. All steps 
-    ## print out the change in ELBO as function of topics after 
-    ## the update: should always be positive!
+    vocab = open('./dictnostops.txt').readlines()
+    tm = T_HDP(vocab, K, T, topicpath, D, 1, 1, 0.01, 1024., 0.7)
+    
+    # Update topics
     n.random.seed(seed)
     (wordids, wordcts) = \
-            get_batch_from_disk(inroot, D, 10)
-    for i in range(10):
-        _ = tm.debug_update_lambda(wordids[i], wordcts[i])
+            get_batch_from_disk(inroot, D, 100)
+    tm.do_m_step(wordids, wordcts)
+    
+    # Evaluate held-out LL
+    if (evalLL):
+        LL = tm.log_likelihood_docs(howordids,howordcts)
     return
 
-def main():
-    sanity_one_batch(3, 100, 10, None)
-    # sanity_M_step(1, 100, None)
+def main(evalLL):
+    # sanity_E_step(3, 100, 10, None)
+    sanity_atomic(evalLL=evalLL)
     return
 
 if __name__ == '__main__':
-    main()
+    main(True)

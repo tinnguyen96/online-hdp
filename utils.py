@@ -12,24 +12,42 @@ def dirichlet_expectation(alpha):
         return(psi(alpha) - psi(n.sum(alpha)))
     return(psi(alpha) - psi(n.sum(alpha, 1))[:, n.newaxis])
 
-def expect_log_sticks(sticks1, sticks2, mask):
+def expect_log_sticks(sticks1, sticks2):
     """
     Inputs:
         sticks1: (T,) array
         sticks2: (T,) array. Note that sticks2[-1] = 0
-        mask: (T, T) masking matrix  
     Outputs:
-        E[log sigma (V)] where V are the stick-breaking variables and sigma(V)
-        is the corresponding size-biased representation.
+        E[log pi (V)] where V are the stick-breaking variables and pi(V)
+        is the corresponding size-biased representation i.e. 
+        pi_i = V_i prod_{j=1}^{i-1} (1-V_j). 
     """
     assert sticks2[-1] == 0, "Wrong input to expect_log_sticks"
     ElogVm1Vd = dirichlet_expectation(n.column_stack((sticks1,sticks2)))
     ElogVd = ElogVm1Vd[:,0] # shape (T,). 
     Elogm1Vd = ElogVm1Vd[:,1] # shape (T,)
     Elogm1Vd[-1] = 0
-    Elogthetad = ElogVd + n.dot(mask, Elogm1Vd) # shape (T,)
-    
+    cumsums = n.cumsum(Elogm1Vd) # entry i = sum_{j=1}^{i} E[log(1-V_j)]
+    Elogthetad = ElogVd + cumsums - Elogm1Vd
     return Elogthetad
+
+def GEM_expectation(tau1, tau2):
+    """
+    Inputs:
+        tau1: 1 x K, positive numbers, last number is 1 
+        tau2: 1 x K, non-negative numbers, last number is 0
+    Outputs:
+        E(theta(k)) where theta(k) = Beta(tau1(k), tau2(k)) prod{i=1}{k-1} (1-Beta(tau1(k), tau2(k)))
+    """
+    # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
+    # and they are independent because of mean-field.
+    Ep = tau1/(tau1+tau2)
+    Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
+    Em1p[0,-1] = 1 # hack
+    cumu = n.cumprod(Em1p, axis=1) # shape (K,)
+    ratiop = Ep/Em1p # shape (1, K)
+    theta = n.multiply(ratiop, cumu) # shape (1, K)
+    return theta
 
 def beta_KL(alpha1, beta1, alpha2, beta2):
     """
@@ -71,34 +89,3 @@ def multinomial_entropy(phi):
     logphi = n.log(phi)
     entropy = n.sum(n.multiply(logphi, phi), axis=0)
     return entropy 
-
-def GEM_expectation(tau1, tau2, K):
-    """
-    Inputs:
-        K: length of tau1 and tau2
-        tau1: 1 x K, positive numbers, last number is 1 
-        tau2: 1 x K, non-negative numbers, last number is 0
-    Outputs:
-        E(theta(k)) where theta(k) = Beta(tau1(k), tau2(k)) prod{i=1}{k-1} (1-Beta(tau1(k), tau2(k)))
-    """
-    # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
-    # and they are independent because of mean-field.
-    Ep = tau1/(tau1+tau2)
-    Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
-    """
-    print(tau1) print(tau2) print(Ep)
-    """
-    Em1p[0,K-1] = 1 # hack
-    cumu = n.cumprod(Em1p, axis=1) # shape (K,)
-    """
-    print("Em1p shape") print(Em1p.shape)
-    """
-    ratiop = Ep/Em1p # shape (1, K)
-    """
-    print("ratiop shape") print(ratiop.shape) print(cumu[0,:(self._K-1)].shape)
-    """
-    theta = n.multiply(ratiop, cumu) # shape (1, K)
-    """
-    print(theta)
-    """
-    return theta

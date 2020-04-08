@@ -5,4 +5,4 @@
 
 module load anaconda/2020a 
 cd ..
-python -u wikipedia.py --method thdp --seed $SLURM_ARRAY_TASK_ID --batchsize 50 --K 100 --T 20
+python -u wikipedia.py --method thdp --seed $SLURM_ARRAY_TASK_ID --batchsize 50 --K 100 --T 20 --LLiter 50 --topiciter 100

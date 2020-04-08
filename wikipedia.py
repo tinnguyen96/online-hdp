@@ -23,7 +23,8 @@ def main():
     parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
     parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list",nargs='+',type=int, default=[100])
     parser.add_argument("--T", help="cap of document-level number of topics",type=int, default=20)
-    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood",type=int, default=50)
+    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood",type=int, default=100)
+    parser.add_argument("--progressiter", help="number of iterations between reporting average train time", type=int, default=10)
     parser.add_argument("--topiciter", help="number of iterations between saving topics",type=int, default=100)
     parser.add_argument("--inroot", help="training corpus root name", default='wiki10k')
     parser.add_argument("--heldoutroot", help="testing corpus root name", default='wiki1k')
@@ -63,11 +64,16 @@ def main():
     else:
         max_iter = args.maxiter
     
+    # Spacing between computing average train time
+    progressiter = args.progressiter
+    
     # Spacing between saving topic 
     topiciter = args.topiciter
     
     # Spacing between evaluating held-out log-likelihood
     LLiter = args.LLiter
+    
+    print("Save topics every %d iterations and report likelihood every %d iterations" %(topiciter, LLiter))
     
     # Our vocabulary
     vocab = open('./dictnostops.txt').readlines()
@@ -92,7 +98,7 @@ def main():
         # Different constructors for different methods
         method = args.method
         if (method == "nhdp"):
-            tm = topicmodelvb.NNFA_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
+            tm = topicmodelvb.N_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
         elif (method == "thdp"):
             tm = topicmodelvb.T_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
         train_time = 0
@@ -106,20 +112,26 @@ def main():
             # Load a random batch of articles from disk
             (wordids, wordcts) = \
                 corpus.get_batch_from_disk(inroot, D, batchsize)
-            # Give them to SB_LDA
+            # Give them to topic model
             tm.do_m_step(wordids, wordcts)
             t1 = time.time()
             train_time += t1 - t0
+            
+            if (iteration % progressiter == 0):
+                print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f,  average train time = %.2f' % \
+                    (seed, iteration, tm._rhot, train_time, train_time/(iteration+1)))
+            
             # Compute average log-likelihood on held-out corpus every so number of iterations
             if (iteration % LLiter == 0):
                 t0 = time.time()
                 LL = tm.log_likelihood_docs(howordids,howordcts)
                 t1 = time.time()
                 test_time = t1 - t0
-                print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f,  test time = %f,  held-out log-likelihood = %f' % \
-                    (seed, iteration, tm._rhot, train_time, test_time, LL))
+                print('\t\t seed %d, iter %d:  rho_t = %f,  test time = %f, held-out log-likelihood = %f' % \
+                    (seed, iteration, tm._rhot, test_time, LL))
                 LL_list.append([iteration, train_time, LL])
                 numpy.savetxt(LLsavename, LL_list)
+                
             # save topics every so number of iterations
             if (seed == 0):
                 if (iteration % topiciter == 0):
