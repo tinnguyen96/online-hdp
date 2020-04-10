@@ -1,5 +1,5 @@
 #!/bin/bash  
-#SBATCH --ntasks-per-node=6 # core count
+#SBATCH --ntasks-per-node=1 # core count
 #SBATCH -o ../logs/nhdpD100T20_submit.sh.log-%j
 #SBATCH -a 0
 

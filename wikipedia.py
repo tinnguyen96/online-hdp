@@ -1,11 +1,13 @@
 import pickle, string, numpy, getopt, sys, random, time, re, pprint
 import os
 import argparse
+import matplotlib.pyplot as plt
 
 import topicmodelvb
 import corpus
 
 def makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method):
+    """ Make save paths (and directories, if necessary) for experiment """
     savedir = "results/" + method + "K" + str(K) + "_T" + str(T) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
     if (not topicpath is None):
         savedir = savedir + "/warm/" + topicpath
@@ -15,23 +17,41 @@ def makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method):
         print("Succesfully created directory %s" %savedir)
     return savedir, LLsavename 
 
+def maketopicpath(topicinfo):
+    """Create dictionary that topic models need to load pre-trained topics """
+    
+    if (topicinfo is None):
+        topicfile = None
+    else:
+        othermethod = topicinfo[0]
+        iteration = topicinfo[2]
+        topicfile = {}
+        topicfile["method"] = othermethod
+        topicfile["lambda"] = topicinfo[1] + "lambda-" + iteration + ".dat"
+        if (othermethod == "N_dSB_DP"):
+            topicfile["a"] = topicinfo[1] + "a-" + iteration + ".dat"
+        elif (othermethod == "T_dSB_DP"):
+            topicfile["a"] = topicinfo[1] + "a-" + iteration + ".dat"
+            topicfile["b"] = topicinfo[1] + "b-" + iteration + ".dat"
+    return topicfile
+
 def main():
     """
     Load a wikipedia corpus in batches from disk and run either T-HDP or N-HDP.
     """
     parser = argparse.ArgumentParser()
     parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
-    parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list",nargs='+',type=int, default=[100])
-    parser.add_argument("--T", help="cap of document-level number of topics",type=int, default=20)
-    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood",type=int, default=100)
-    parser.add_argument("--progressiter", help="number of iterations between reporting average train time", type=int, default=10)
-    parser.add_argument("--topiciter", help="number of iterations between saving topics",type=int, default=100)
-    parser.add_argument("--inroot", help="training corpus root name", default='wiki10k')
-    parser.add_argument("--heldoutroot", help="testing corpus root name", default='wiki1k')
-    parser.add_argument("--topicpath",help="path to pre-trained topics for warm-start. Don't set if numtopics is a list", default=None)
+    parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list [[100]]",nargs='+',type=int, default=[100])
+    parser.add_argument("--T", help="cap of document-level number of topics [10]",type=int, default=10)
+    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood [100]",type=int, default=100)
+    parser.add_argument("--progressiter", help="number of iterations between reporting average train time [10]", type=int, default=10)
+    parser.add_argument("--topiciter", help="number of iterations between saving topics [100]",type=int, default=100)
+    parser.add_argument("--inroot", help="training corpus root name [wiki10k]", default='wiki10k')
+    parser.add_argument("--heldoutroot", help="testing corpus root name [wiki1k]", default='wiki1k')
+    parser.add_argument("--topicinfo",help="information on pre-trained topics for warm-start. Don't set if numtopics is a list. [['N_dSB_DP','results/ndhp_K100_T10_D50_wiki10k_wiki1k/', '100']]", ,nargs='+', default=None)
     parser.add_argument("--seed", help="seed for replicability",type=int, default=0)
-    parser.add_argument("--maxiter", help="total number of mini-batches to train",type=int, default=1000)
-    parser.add_argument("--batchsize", help="mini-batch size",type=int, default=20)
+    parser.add_argument("--maxiter", help="total number of mini-batches to train [1000]",type=int, default=1000)
+    parser.add_argument("--batchsize", help="mini-batch size [20]",type=int, default=20)
     args = parser.parse_args()
     
     # The rootname, for instance wiki10k
@@ -73,19 +93,15 @@ def main():
     # Spacing between evaluating held-out log-likelihood
     LLiter = args.LLiter
     
-    print("Save topics every %d iterations and report likelihood every %d iterations" %(topiciter, LLiter))
+    print("Save topics every %d iterations, compute average train time every %d iterations, report likelihood every %d iterations" %(topiciter, progressiter, LLiter))
     
     # Our vocabulary
     vocab = open('./dictnostops.txt').readlines()
     W = len(vocab)
     
-    # Whether to do warmstart
-    topicpath = args.topicpath
-    if (topicpath is None):
-        topicfile = None
-    else:
-        topicfile = topicpath + ".dat"
-        
+    # Paths for warm-start training
+    topicfile = maketopicfile(args.topicinfo)
+    
      # load the held-out documents
     (howordids,howordcts) = \
                     corpus.get_batch_from_disk(heldoutroot, D_, None)
@@ -98,15 +114,29 @@ def main():
         # Different constructors for different methods
         method = args.method
         if (method == "nhdp"):
-            tm = topicmodelvb.N_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
+            tm = topicmodelvb.N_dSB_DP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
         elif (method == "thdp"):
-            tm = topicmodelvb.T_HDP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
+            tm = topicmodelvb.T_dSB_DP(vocab, K, T, topicfile, D, 1, 1, 0.01, 1024., 0.7)
+        elif (method == "lda"):
+            tm = topicmodelvb.LDA(vocab, K, topicfile, D, 1, 0.01, 1024, 0.7)
+            
         train_time = 0
         savedir, LLsavename = makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method)
        
         if (not topicpath is None):
+            ## Are the pre-trained topics a good initialization?
             initLL = tm.log_likelihood_docs(howordids,howordcts)
-            print("Under warm start topics, current model has held-out LL: %f" %initLL)
+            print("Under warm-start topics, current model has held-out LL: %f" %initLL)
+            if (method == "ndhp" || method == "thdp"):
+                ## Save plot of expected proportions
+                Etheta = tm._Etheta
+                plt.figure()
+                plt.plot(Etheta, marker='o', markersize=4, label='Expected proportions',color='b')
+                plt.title("Expected topic proportions at initialization")
+                plt.xlabel("Topic index")
+                plt.ylabel("Expected proportions")
+                plt.savefig(savedir + "/expected_proportions_@init.png")
+                
         for iteration in range(0, max_iter):
             t0 = time.time()
             # Load a random batch of articles from disk
@@ -135,14 +165,9 @@ def main():
             # save topics every so number of iterations
             if (seed == 0):
                 if (iteration % topiciter == 0):
-                    lambdaname = (savedir + "/lambda-%d.dat") % iteration
-                    numpy.savetxt(lambdaname, tm._lambda)
-                    aname = (savedir + "/a-%d.dat") % iteration 
-                    numpy.savetxt(aname, tm._a)
-                    if (method == "thdp"):
-                        bname = (savedir + "/b-%d.dat") % iteration 
-                        numpy.savetxt(bname, tm._b)
+                    tm.save_topics(savedir, iteration)
 
-        print("Finished experiment with %d-topic %s model" %(K, T, method))
+        print("Finished experiment with top level %d, second level %d,  %s model" %(K, T, method))
+        
 if __name__ == '__main__':
     main()

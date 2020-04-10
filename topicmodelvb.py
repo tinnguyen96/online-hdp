@@ -1,5 +1,5 @@
 """
-Fit truncated-HDP and NNFA-HDP topic models using SVI. 
+Fit LDA or T-dSB-DP or N-dSB-DP using SVI. 
 """
 
 import sys, re, time, string
@@ -14,12 +14,233 @@ from corpus import *
 n.random.seed(100000001)
 meanchangethresh = 0.001
 
-class _TopicModel:
+class LDA:
     """
-    Parent class for SVI training of topic models (NNFA-HDP or T-HDP).
+    SVI training of topic models LDA.
     """
 
-    def __init__(self, vocab, K, T, topicpath, D, omega, alpha, eta, tau0, kappa):
+    def __init__(self, vocab, K, topicfile, Einit, D, alpha0, eta, tau0, kappa):
+        """
+        Arguments:
+        K: Number of topics
+        vocab: A set of words to recognize. When analyzing documents, any word
+           not in this set will be ignored.
+        D: Total number of documents in the population. 
+        topicfile: Dictionary containing path to some other topic model's output topics and
+                the name of the topic model.
+        Einit: Whether to initialize per-document topic proportions or per-word 
+            topic assignments in E-step
+        alpha0: for LDA 1/K, alpha = alpha0/K is the hyperparameter for prior on topic 
+            proportions theta_d. For SB-LDA, alpha0 is governs the stick-breaking
+            Beta(1,alpha0). 
+        eta: Hyperparameter for prior on topics beta
+        tau0: A (positive) learning parameter that downweights early iterations
+        kappa: Learning rate: exponential decay rate---should be between
+             (0.5, 1.0] to guarantee asymptotic convergence.
+
+        Remarks:
+            User should make sure the topics from topicpath are compatible with 
+            K and vocab.
+        """
+        
+        t0 = time.time()
+        self._alpha = alpha0/K
+        self._vocab, self._idxtoword = make_vocab(vocab)
+
+        self._K = K
+        self._Einit = Einit
+        self._W = len(self._vocab)
+        self._D = D
+        self._eta = eta
+        self._tau0 = tau0 + 1
+        self._kappa = kappa
+        self._updatect = 0
+
+        # Initialize the variational distribution q(beta|lambda) if topicpath is not None
+        if (topicpath is None):
+            self._lambda = 1*n.random.gamma(100., 1./100., (self._K, self._W))
+        else:
+            self._lambda = n.loadtxt(topicfile["lambda"])
+            assert self._lambda.shape==(self._K,self._W), "Wrong shape of topics"
+            print("Successfully loaded topics from %s" %topicfile["lambda"])
+        self._Elogbeta = dirichlet_expectation(self._lambda)
+        self._expElogbeta = n.exp(self._Elogbeta)
+        t1 = time.time()
+        print("Time to initialize topic model using %d topics is %.2f. \
+                E-step init type:%s" %(self._K, t1-t0, self._Einit))
+        
+        return
+    
+    def save_topics(self, savedir, iteration):
+        """Save topics"""
+        lambdaname = (savedir + "/lambda-%d.dat") % iteration
+        n.savetxt(lambdaname, self._lambda)
+        return 
+    
+    def do_e_step(self, wordids, wordcts):
+        batchD = len(wordids)
+
+        # Initialize the variational distribution q(theta|gamma) for
+        # the mini-batch
+        # each gamma[:,:] has mean 1 and variance 0.01
+        gamma = 1*n.random.gamma(100., 1./100., (batchD, self._K))
+        Elogtheta = dirichlet_expectation(gamma)
+        expElogtheta = n.exp(Elogtheta)
+
+        sstats = n.zeros(self._lambda.shape)
+        # Now, for each document d update that document's gamma and phi
+        it = 0
+        meanchange = 0
+        converged = False
+        for d in range(0, batchD):
+            # These are mostly just shorthand (but might help cache locality)
+            ids = wordids[d]
+            cts = wordcts[d]
+            gammad = gamma[d, :]
+            Elogthetad = Elogtheta[d, :]
+            expElogthetad = expElogtheta[d, :]
+            expElogbetad = self._expElogbeta[:, ids]
+            # The optimal phi_{dwk} is proportional to 
+            # expElogthetad_k * expElogbetad_w. phinorm is the normalizer.
+            phinorm = n.dot(expElogthetad, expElogbetad) + 1e-100
+            # Iterate between gamma and phi until convergence
+            for it in range(0, 200):
+                lastgamma = gammad
+                # We represent phi implicitly to save memory and time.
+                # Substituting the value of the optimal phi back into
+                # the update for gamma gives this update. Cf. Lee&Seung 2001.
+                gammad = self._alpha + expElogthetad * \
+                    n.dot(cts / phinorm, expElogbetad.T)
+                Elogthetad = dirichlet_expectation(gammad)
+                expElogthetad = n.exp(Elogthetad)
+                phinorm = n.dot(expElogthetad, expElogbetad) + 1e-100
+                # If gamma hasn't changed much, we're done.
+                meanchange = n.mean(abs(gammad - lastgamma))
+                if (meanchange < meanchangethresh):
+                    converged = True
+                    break
+            # might have exited coordinate ascent without convergence
+            """
+            if (not converged):
+                print("Coordinate ascent in E-step didn't converge")
+                print("Last change in gammad %f" %meanchange)
+            """
+            gamma[d, :] = gammad
+            # Contribution of document d to the expected sufficient
+            # statistics for the M step.
+            sstats[:, ids] += n.outer(expElogthetad.T, cts/phinorm)
+
+        # This step finishes computing the sufficient statistics for the
+        # M step, so that
+        # sstats[k, w] = \sum_d n_{dw} * phi_{dwk} 
+        # = \sum_d n_{dw} * exp{Elogtheta_{dk} + Elogbeta_{kw}} / phinorm_{dw}.
+        sstats = sstats * self._expElogbeta
+
+        return (gamma,sstats) 
+
+    def theta_means(self, wordobs_ids, wordobs_cts):
+        """
+        Inputs:
+            wordobs_ids = list
+            wordobs_cts = list
+        Outputs:
+            Report E(q(theta(k)) across topics, where q(theta) is variational 
+            approximation of the new document's topic proportions.
+        """
+        # do E-step for the document represented by the observed words
+        # gamma should be 1 x self._K
+        gamma, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
+        # q(theta|gamma) is Dirichlet, so marginal means are average of Dirichlet parameters
+        theta = gamma/n.sum(gamma) 
+        theta = theta.flatten(order='C') 
+        return theta
+
+    def update_lambda(self, wordids, wordcts):
+        """
+        First does an E step on the mini-batch given in wordids and
+        wordcts, then uses the result of that E step to update the
+        variational parameter matrix lambda.
+
+        Arguments:
+        docs:  List of D documents. Each document must be represented
+               as a string. (Word order is unimportant.) Any
+               words not in the vocabulary will be ignored.
+    
+        Returns variational parameters for per-document topic proportions.
+        """
+
+        # rhot will be between 0 and 1, and says how much to weight
+        # the information we got from this mini-batch.
+        rhot = pow(self._tau0 + self._updatect, -self._kappa)
+        self._rhot = rhot
+        # Do an E step to update gamma, phi | lambda for this
+        # mini-batch. This also returns the information about phi that
+        # we need to update lambda.
+        varparams, sstats = self.do_e_step(wordids, wordcts)
+        # Estimate held-out likelihood for current values of lambda.
+        # Update lambda based on documents.
+        self._lambda = self._lambda * (1-rhot) + \
+            rhot * (self._eta + self._D * sstats / len(wordids))
+        self._Elogbeta = dirichlet_expectation(self._lambda)
+        self._expElogbeta = n.exp(self._Elogbeta)
+        self._updatect += 1
+
+        return varparams
+
+    def log_likelihood_one(self, wordobs_ids, wordobs_cts, wordho_ids, \
+                      wordho_cts):
+        """
+        Inputs:
+            wordobs_ids: list, index in vocab of unique observed words
+            wordobs_cts: list, number of occurences of each unique observed word
+            wordho_ids: list, index in vocab of held-out words
+            wordho_cts: list, number of occurences of each unique held-out word
+        Outputs:
+            average log-likelihood of held-out words for the given document
+        """
+        # theta_means should be 1 x self._K
+        theta_means = self.theta_means(wordobs_ids, wordobs_cts)
+        # lambda_sums should be self._K x 1
+        lambda_sums = n.sum(self._lambda, axis=1) 
+        # lambda_means should be self._K x self._W, rows suming to 1
+        lambda_means = self._lambda/lambda_sums[:, n.newaxis] 
+        Mho = list(range(0,len(wordho_ids)))
+        proba = [wordho_cts[i]*n.log(n.dot(theta_means,lambda_means[:,wordho_ids[i]])) \
+                for i in Mho]
+        # average across all held-out words
+        tot = sum(wordho_cts)
+        return sum(proba)/tot
+
+    def log_likelihood_docs(self, wordids, wordcts):
+        """
+        Inputs:
+            wordids: list of lists
+            wordcts: list of lists
+        Outputs:
+        """ 
+        t0 = time.time()
+        M = len(wordids)
+        log_likelihoods = []
+        for i in range(M):
+            docids = wordids[i] # list 
+            doccts = wordcts[i] # list
+            # only evaluate log-likelihood if non-trivial document
+            if len(docids) > 1:
+                wordobs_ids, wordobs_cts, wordho_ids, wordho_cts = \
+                    split_document(docids, doccts)
+                doc_likelihood = \
+                    self.log_likelihood_one(wordobs_ids, wordobs_cts, wordho_ids, wordho_cts)
+                log_likelihoods.append(doc_likelihood)
+        t1 = time.time()
+        # print("Time taken to evaluate log-likelihood %.2f" %(t1-t0))
+        return n.mean(log_likelihoods)
+    
+class _TopicModel:
+    """
+    Parent class for SVI training of topic models (N-dSB-DP or T-dSB-DP).
+    """
+
+    def __init__(self, vocab, K, T, topicfile, D, omega, alpha, eta, tau0, kappa):
         """
         Arguments:
             K: Number of topics i.e. corpus-level truncation
@@ -27,7 +248,8 @@ class _TopicModel:
             vocab: A set of words to recognize. When analyzing documents, any word
                not in this set will be ignored.
             D: Total number of documents in the population. 
-            topicpath: Path to some pre-trained topics' i.e. variational Dirichlet parameters. 
+            topicfile: Dictionary containing path to some other topic model's output topics and
+                the name of the topic model. 
             omega: corpus-level stick-breaking Beta(1,omega)
             alpha: per-document stick-breaking Beta(1,alpha)
             eta: Hyperparameter for prior on topics beta
@@ -87,7 +309,7 @@ class _TopicModel:
         # zeta's shape: (self._T, self._K). The rows are identical.
         zetad = n.multiply(n.ones((self._T, self._K)), initzetad[n.newaxis, :]) 
 
-        ## phi
+        ## phi (implicitly defined)
         # phi's shape: (self._T, len(ids))
         tempphid = n.dot(zetad, Elogbetad)
         logphidnorm = logsumexp(tempphid, axis=0) # shape (len(ids),)
@@ -158,7 +380,7 @@ class _TopicModel:
                 
                 # word assignment update
                 Elogpid = expect_log_sticks(gamma1d, gamma2d) # shape (self._T,)
-                tempphid = n.dot(zetad, Elogbetad) # shape (self._T, len(ids))
+                tempphid = n.dot(zetad, Elogbetad) # shape (self._T, len(ids)). Potentially the most time-consuming part of E-step
                 tempphid = tempphid + Elogpid[:, n.newaxis]
                 logphidnorm = logsumexp(tempphid, axis=0)
                 logphid = tempphid - logphidnorm[n.newaxis, :]
@@ -253,12 +475,12 @@ class _TopicModel:
         # print("Time taken to evaluate log-likelihood %.2f" %(t1-t0))
         return n.mean(log_likelihoods)
     
-class T_HDP(_TopicModel):
+class T_dSB_DP(_TopicModel):
     """
     Inherit _TopicModel to train truncated HDP. 
     """
 
-    def __init__(self, vocab, K, T, topicpath, D, omega, alpha, eta, tau0, kappa):
+    def __init__(self, vocab, K, T, topicfile, D, omega, alpha, eta, tau0, kappa):
         """
         Arguments:
             K: Number of topics i.e. corpus-level truncation
@@ -266,7 +488,8 @@ class T_HDP(_TopicModel):
             vocab: A set of words to recognize. When analyzing documents, any word
                not in this set will be ignored.
             D: Total number of documents in the population. 
-            topicpath: Path to some pre-trained topics' i.e. variational Dirichlet parameters. 
+            topicfile: Dictionary containing path to some other topic model's output topics and
+                the name of the topic model.
             omega: corpus-level stick-breaking Beta(1,omega)
             alpha: per-document stick-breaking Beta(1,alpha)
             eta: Hyperparameter for prior on topics beta
@@ -274,7 +497,7 @@ class T_HDP(_TopicModel):
             kappa: Learning rate: exponential decay rate---should be between
                  (0.5, 1.0] to guarantee asymptotic convergence.
         Remarks:
-            The inheritted classes T_HDP and NNFA_HDP might use more 
+            The inheritted classes T_dSB_DP and NNFA_HDP might use more 
             instance variables. 
             User should make sure the topics from topicpath are compatible with 
             K and vocab.
@@ -284,26 +507,91 @@ class T_HDP(_TopicModel):
         # Common instance variables
         _TopicModel.__init__(self, vocab, K, T, topicpath, D, omega, alpha, eta, tau0, kappa)
         
-        # Truncation representation of the corpus-level DP
-        ## Initialize q(beta|lambda) if topicpath is not None
+        # T_dSB_DP specific instance ariables
         if (topicpath is None):
-            self._lambda = np.random.gamma(1.0, 1.0, (self._K, self._W)) * self._D*100/(self._K*self._W) + self._eta
+            ## Initialize q(beta|lambda) if topicpath is not None
+            self._lambda = np.random.gamma(1.0, 1.0, (self._K, self._W)) \
+                                        * self._D*100/(self._K*self._W) + self._eta
+            self._a = n.ones(self._K)
+            self._ainc = n.zeros(self._K)
+            self._b = self._omega*n.ones(self._K)
+            self._b[-1] = 0
         else:
-            self._lambda = n.loadtxt(topicpath)
-            assert self._lambda.shape == (self._K,self._W), "Wrong shape of topics"
-            print("Successfully loaded topics from %s" %topicpath)
+            self._lambda, self._a, self._b = self.convert_topics(topicfile)
+            print("Successfully loaded topics from %s" %topicfile["lambda"])
+            
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
-        ## Initialize a and b using the prior
-        self._a = n.ones(self._K)
-        self._ainc = n.zeros(self._K)
-        self._b = self._omega*n.ones(self._K)
-        self._b[-1] = 0
         self._Elogtheta = expect_log_sticks(self._a, self._b) # shape (self._K,)
         
+        # expected topic proportions after initialization/loading pre-trained
+        self._Etheta = GEM_expectation(self._a[np.newaxis,:],self._b[np.newaxis,:]).flatten()
+        
         t1 = time.time()
-        print("Time to initialize %d-topic model is %.2f" %(self._K, t1-t0))
+        print("Time to initialize %d-topic model, each document using %d topics, is %.2f" %(self._K, self._T, t1-t0))
         return
+    
+    def convert_topics(self, topicfile):
+        """
+        Convert pre-trained topics of another method 
+        into the suitable format for warm-start training.      
+        
+        Inputs:
+            topicfile = dictionary, topicfile["lambda"] is path to topics
+                topicfile["a"] is path to a, topicfile["method"] = "N_dSB_DP"
+                for instance. 
+        Outputs:
+        
+        Remarks:
+            the choice of a and b for topicfile["method"] = "LDA" feels 
+            reasonable, but could be improved.
+        """
+        topics = n.loadtext(topicfile["lambda"])
+        assert topics.shape == (self._K,self._W), "Wrong shape of topics"
+        
+        if (topicfile["method"] == "T_dSB_DP"):
+            a = n.loadtext(topicfile["a"])
+            b = n.loadtext(topicfile["b"])
+            
+        elif (topicfile["method"] == "N_dSB_DP"):
+            # re-order topics by sum of Dirichlet parameters
+            topicssum = n.sum(topics, axis=1)
+            idx = [i for i in reversed(n.argsort(topicssum))]
+            topics = topics[idx,:]
+            a = n.loadtext(topicfile["a"])
+            a = a[idx]
+            a[-1] = 1.0
+            ainc = a - 1.0
+            # N_dsB_DP doesn't use b, so we have to form new estimates
+            # based on a
+            b = self._omega + n.dot(self._Kmask, ainc)
+            b[-1] = 0
+            
+        elif (topicfile["method"] == "LDA"):
+            # re-order topics by sum of Dirichlet parameters
+            topicssum = n.sum(topics, axis=1)
+            idx = [i for i in reversed(n.argsort(topicssum))]
+            topics = topics[idx,:]
+            # compute mean of each topics' top 100 occuring words
+            wordsorted = n.sort(topics,axis=1)
+            wordmeans = n.mean(wordsorted[:,0:100], axis=1)
+            a = wordmeans
+            a[-1] = 1.0
+            ainc = a - 1.0
+            b = self._omega + n.dot(self._Kmask, ainc)
+            b[-1] = 0 
+        
+        return (topics, a, b)
+    
+    def save_topics(self, savedir, iteration):
+        """Save topics"""
+        lambdaname = (savedir + "/lambda-%d.dat") % iteration
+        n.savetxt(lambdaname, self._lambda)
+        aname = (savedir + "/a-%d.dat") % iteration 
+        n.savetxt(aname, self._a)
+        bname = (savedir + "/b-%d.dat") % iteration 
+        n.savetxt(bname, self._b)
+        return 
     
     def do_m_step(self, wordids, wordcts, reorder=True):
         """
@@ -353,6 +641,7 @@ class T_HDP(_TopicModel):
         self._b = self._omega + n.dot(self._Kmask, self._ainc)
         self._b[-1] = 0
         self._Elogtheta = expect_log_sticks(self._a, self._b) # shape (self._K,)
+        self._Etheta = GEM_expectation(self._a[np.newaxis,:],self._b[np.newaxis,:]).flatten()
         
         self._updatect += 1
 
@@ -476,7 +765,7 @@ class T_HDP(_TopicModel):
 
         return (zeta, gamma1, gamma2), sstats
 
-class N_HDP(_TopicModel):
+class N_dSB_DP(_TopicModel):
     """
     Inherit _TopicModel to train Non-Nested Finite Approximation to HDP. 
     """
@@ -502,24 +791,63 @@ class N_HDP(_TopicModel):
         # Common instance variables
         _TopicModel.__init__(self, vocab, K, T, topicpath, D, omega, alpha, eta, tau0, kappa)
         
-        # NNFA representation of the corpus-level DP
+        # N_dSB_DP specific instance variables
         ## Initialize q(beta|lambda) if topicpath is not None
         if (topicpath is None):
-            self._lambda = np.random.gamma(1.0, 1.0, (self._K, self._W)) * self._D*100/(self._K*self._W) + self._eta
+            self._lambda = np.random.gamma(1.0, 1.0, (self._K, self._W)) \
+                            * self._D*100/(self._K*self._W) + self._eta
+            self._a = self._omega*n.ones(self._K)/self._K
         else:
-            self._lambda = n.loadtxt(topicpath)
-            assert self._lambda.shape == (self._K,self._W), "Wrong shape of topics"
-            print("Successfully loaded topics from %s" %topicpath)
+            self._lambda, self._a = self.convert_topics(topicfile)
+            print("Successfully loaded topics from %s" %topicfile["lambda"])
+        
+        self._Elogtheta = dirichlet_expectation(self._a) # shape (self._K,)
         self._Elogbeta = dirichlet_expectation(self._lambda)
         self._expElogbeta = n.exp(self._Elogbeta)
         
-        ## Initialize a using the prior
-        self._a = self._omega*n.ones(self._K)/self._K
-        self._Elogtheta = dirichlet_expectation(self._a) # shape (self._K,)
+        ## Expected topic proportions
+        self._Etheta = self._a/n.sum(self._a)
         
         t1 = time.time()
-        print("Time to initialize topic model using %d topics is %.2f" %(self._K, t1-t0))
+        print("Time to initialize %d-topic model, each document using %d topics, is %.2f" %(self._K, self._T, t1-t0))
         return
+    
+    def convert_topics(self, topicfile):
+        """
+        Convert pre-trained topics of another method 
+        into the suitable format for warm-start training.      
+        
+        Inputs:
+            topicfile = dictionary, topicfile["lambda"] is path to topics
+                topicfile["a"] is path to a, topicfile["method"] = "N_dSB_DP"
+                for instance. 
+        Outputs:
+        
+        Remarks:
+            the choice of a and b for topicfile["method"] = "LDA" feels 
+            reasonable, but could be improved.
+        """
+        topics = n.loadtext(topicfile["lambda"])
+        assert topics.shape == (self._K,self._W), "Wrong shape of topics"
+        
+        if (topicfile["method"] == "N_dSB_DP" || topicfile["method"] == "T_dSB_DP"):
+            a = n.loadtext(topicfile["a"])
+            
+        elif (topicfile["method"] == "LDA"):
+            # compute mean of each topics' top 100 occuring words
+            wordsorted = n.sort(topics,axis=1)
+            wordmeans = n.mean(wordsorted[:,0:100], axis=1)
+            a = wordmeans
+        
+        return (topics, a)
+    
+    def save_topics(self, savedir, iteration):
+        """Save topics"""
+        lambdaname = (savedir + "/lambda-%d.dat") % iteration
+        n.savetxt(lambdaname, self._lambda)
+        aname = (savedir + "/a-%d.dat") % iteration 
+        n.savetxt(aname, self._a)
+        return 
     
     def do_m_step(self, wordids, wordcts, reorder=True):
         """
@@ -554,6 +882,7 @@ class N_HDP(_TopicModel):
         self._a = (1-rhot)*self._a + \
             rhot * (self._omega/self._K + self._D * sstats["a"] / len(wordids))
         self._Elogtheta = dirichlet_expectation(self._a) # shape (self._K,)
+        self._Etheta = self._a/n.sum(self._a)
                     
         self._updatect += 1
 
@@ -562,7 +891,7 @@ class N_HDP(_TopicModel):
 def sanity_E_step(seed, K, T, topicpath):
     """
     Examine effect of THDP E-step's on a document and the resulting M-step 
-    on T_HDP.
+    on T_dSB_DP.
     Inputs:
         seed: seed for replicability
         K: cap on corpus-level number of topics
@@ -576,7 +905,7 @@ def sanity_E_step(seed, K, T, topicpath):
     with open(infile) as f:
         D = sum(1 for line in f)
     vocab = open('./dictnostops.txt').readlines()
-    tm = T_HDP(vocab, K, T, topicpath, D, 1, 1, 0.01, 1024., 0.7)
+    tm = T_dSB_DP(vocab, K, T, topicpath, D, 1, 1, 0.01, 1024., 0.7)
     
     ## E-step on a document, plotting initial guess of topic proportions 
     ## as well as their convergence, but make no updates to underlying topics 
@@ -616,7 +945,7 @@ def sanity_atomic(seed=0, K=100, T=20, topicpath=None, evalLL=False):
                     get_batch_from_disk(heldoutroot, D_, None)
     
     vocab = open('./dictnostops.txt').readlines()
-    tm = T_HDP(vocab, K, T, topicpath, D, 1, 1, 0.01, 1024., 0.7)
+    tm = T_dSB_DP(vocab, K, T, topicpath, D, 1, 1, 0.01, 1024., 0.7)
     
     # Update topics
     n.random.seed(seed)
