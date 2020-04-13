@@ -1,6 +1,26 @@
 import numpy as n
 from scipy.special import gammaln, psi, beta
 
+class TrainSpecs:
+    def __init__(self, train=False, method='thdp', K=[100], T=10, LLiter=100, progressiter=10, topiciter=100,
+                      inroot='wiki10k', heldoutroot='wiki1k', 
+                      topicinfo=['LDA','results/lda_K100_D50_wiki10k_wiki1k/','100'], seed=0, 
+                      maxiter=1000, batchsize=20):
+        self.train = train
+        self.method = method
+        self.K = K
+        self.T = T
+        self.LLiter = LLiter
+        self.progressiter = progressiter
+        self.topiciter = topiciter
+        self.maxiter = maxiter
+        self.seed = seed
+        self.inroot = inroot
+        self.heldoutroot = heldoutroot
+        self.topicinfo = topicinfo
+        self.batchsize = batchsize
+        return 
+
 def dirichlet_expectation(alpha):
     """
     Inputs:
@@ -78,14 +98,3 @@ def dirichlet_KL(lambdap, lambdaq):
     temp = n.multiply(lambdap-lambdaq, diff)
     term3 = n.sum(temp, axis=1) # shape (K,)
     return term1 + term2 + term3
-
-def multinomial_entropy(phi):
-    """
-    Inputs:
-        phi: K x T, each column is a multinomial distribution.
-    Outputs:
-        entropy of the multinomial distributions, shape (T,)
-    """
-    logphi = n.log(phi)
-    entropy = n.sum(n.multiply(logphi, phi), axis=0)
-    return entropy 

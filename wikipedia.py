@@ -5,19 +5,22 @@ import matplotlib.pyplot as plt
 
 import topicmodelvb
 import corpus
+from utils import TrainSpecs
 
-def makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method):
+def makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicfile, method):
     """ Make save paths (and directories, if necessary) for experiment """
     savedir = "results/" + method + "K" + str(K) + "_T" + str(T) + "_D" + str(batchsize) + "_" + inroot + "_" + heldoutroot
-    if (not topicpath is None):
-        savedir = savedir + "/warm/" + topicpath
+    if (not topicfile is None):
+        topic = topicfile["lambda"].replace(".dat","")
+        topic = topic.replace("results/","")
+        savedir = savedir + "/warm/" + topic
     LLsavename = savedir + "/LL_" + str(seed) + ".csv"
     if not os.path.exists(savedir):
         os.makedirs(savedir,0o777,True)
         print("Succesfully created directory %s" %savedir)
     return savedir, LLsavename 
 
-def maketopicpath(topicinfo):
+def maketopicfile(topicinfo):
     """Create dictionary that topic models need to load pre-trained topics """
     
     if (topicinfo is None):
@@ -35,24 +38,7 @@ def maketopicpath(topicinfo):
             topicfile["b"] = topicinfo[1] + "b-" + iteration + ".dat"
     return topicfile
 
-def main():
-    """
-    Load a wikipedia corpus in batches from disk and run either T-HDP or N-HDP.
-    """
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
-    parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list [[100]]",nargs='+',type=int, default=[100])
-    parser.add_argument("--T", help="cap of document-level number of topics [10]",type=int, default=10)
-    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood [100]",type=int, default=100)
-    parser.add_argument("--progressiter", help="number of iterations between reporting average train time [10]", type=int, default=10)
-    parser.add_argument("--topiciter", help="number of iterations between saving topics [100]",type=int, default=100)
-    parser.add_argument("--inroot", help="training corpus root name [wiki10k]", default='wiki10k')
-    parser.add_argument("--heldoutroot", help="testing corpus root name [wiki1k]", default='wiki1k')
-    parser.add_argument("--topicinfo",help="information on pre-trained topics for warm-start. Don't set if numtopics is a list. [['N_dSB_DP','results/ndhp_K100_T10_D50_wiki10k_wiki1k/', '100']]", ,nargs='+', default=None)
-    parser.add_argument("--seed", help="seed for replicability",type=int, default=0)
-    parser.add_argument("--maxiter", help="total number of mini-batches to train [1000]",type=int, default=1000)
-    parser.add_argument("--batchsize", help="mini-batch size [20]",type=int, default=20)
-    args = parser.parse_args()
+def run_experiment(args):
     
     # The rootname, for instance wiki10k
     inroot = args.inroot
@@ -121,13 +107,12 @@ def main():
             tm = topicmodelvb.LDA(vocab, K, topicfile, D, 1, 0.01, 1024, 0.7)
             
         train_time = 0
-        savedir, LLsavename = makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicpath, method)
+        savedir, LLsavename = makesaves(K, T, batchsize, inroot, heldoutroot, seed, topicfile, method)
        
-        if (not topicpath is None):
+        if (not topicfile is None):
             ## Are the pre-trained topics a good initialization?
-            initLL = tm.log_likelihood_docs(howordids,howordcts)
-            print("Under warm-start topics, current model has held-out LL: %f" %initLL)
-            if (method == "ndhp" || method == "thdp"):
+            
+            if (method == "nhdp" or method == "thdp"):
                 ## Save plot of expected proportions
                 Etheta = tm._Etheta
                 plt.figure()
@@ -136,38 +121,80 @@ def main():
                 plt.xlabel("Topic index")
                 plt.ylabel("Expected proportions")
                 plt.savefig(savedir + "/expected_proportions_@init.png")
-                
-        for iteration in range(0, max_iter):
-            t0 = time.time()
-            # Load a random batch of articles from disk
-            (wordids, wordcts) = \
-                corpus.get_batch_from_disk(inroot, D, batchsize)
-            # Give them to topic model
-            tm.do_m_step(wordids, wordcts)
-            t1 = time.time()
-            train_time += t1 - t0
             
-            if (iteration % progressiter == 0):
-                print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f,  average train time = %.2f' % \
-                    (seed, iteration, tm._rhot, train_time, train_time/(iteration+1)))
-            
-            # Compute average log-likelihood on held-out corpus every so number of iterations
-            if (iteration % LLiter == 0):
+            ## Plot initial held-out log-likelihood
+            initLL = tm.log_likelihood_docs(howordids,howordcts)
+            print("Under warm-start topics, current model has held-out LL: %f" %initLL)
+        
+        ## Do we train or just call it a day ...
+        if (args.train):
+            for iteration in range(0, max_iter):
                 t0 = time.time()
-                LL = tm.log_likelihood_docs(howordids,howordcts)
+                # Load a random batch of articles from disk
+                (wordids, wordcts) = \
+                    corpus.get_batch_from_disk(inroot, D, batchsize)
+                # Give them to topic model
+                tm.do_m_step(wordids, wordcts)
                 t1 = time.time()
-                test_time = t1 - t0
-                print('\t\t seed %d, iter %d:  rho_t = %f,  test time = %f, held-out log-likelihood = %f' % \
-                    (seed, iteration, tm._rhot, test_time, LL))
-                LL_list.append([iteration, train_time, LL])
-                numpy.savetxt(LLsavename, LL_list)
-                
-            # save topics every so number of iterations
-            if (seed == 0):
-                if (iteration % topiciter == 0):
-                    tm.save_topics(savedir, iteration)
+                train_time += t1 - t0
 
-        print("Finished experiment with top level %d, second level %d,  %s model" %(K, T, method))
+                if (iteration % progressiter == 0):
+                    print('seed %d, iter %d:  rho_t = %f,  cumulative train time = %f,  average train time = %.2f' % \
+                        (seed, iteration, tm._rhot, train_time, train_time/(iteration+1)))
+
+                # Compute average log-likelihood on held-out corpus every so number of iterations
+                if (iteration % LLiter == 0):
+                    t0 = time.time()
+                    LL = tm.log_likelihood_docs(howordids,howordcts)
+                    t1 = time.time()
+                    test_time = t1 - t0
+                    print('\t\t seed %d, iter %d:  rho_t = %f,  test time = %f, held-out log-likelihood = %f' % \
+                        (seed, iteration, tm._rhot, test_time, LL))
+                    LL_list.append([iteration, train_time, LL])
+                    numpy.savetxt(LLsavename, LL_list)
+
+                # save topics every so number of iterations
+                if (seed == 0):
+                    if (iteration % topiciter == 0):
+                        tm.save_topics(savedir, iteration)
+
+            print("Finished experiment with top level %d, second level %d,  %s model" %(K, T, method))
+            
+    return 
+    
+def main():
+    """
+    Read command-line arguments to train a topic model using wikipedia corpora.
+    """
+    parser = argparse.ArgumentParser()
+    parser.add_arugmnet("--train", help="whether to train or just load pre-trained topics and report LL [True]", type=bool, default=True)
+    parser.add_argument("--method", help="type of topic model [thdp, nhdp]", default='thdp')
+    parser.add_argument("--K", help="cap of corpus-level number of topics, expecting a list [[100]]",nargs='+',type=int, default=[100])
+    parser.add_argument("--T", help="cap of document-level number of topics [10]",type=int, default=10)
+    parser.add_argument("--LLiter", help="number of iterations between evaluating held-out log-likelihood [100]",type=int, default=100)
+    parser.add_argument("--progressiter", help="number of iterations between reporting average train time [10]", type=int, default=10)
+    parser.add_argument("--topiciter", help="number of iterations between saving topics [100]",type=int, default=100)
+    parser.add_argument("--inroot", help="training corpus root name [wiki10k]", default='wiki10k')
+    parser.add_argument("--heldoutroot", help="testing corpus root name [wiki1k]", default='wiki1k')
+    parser.add_argument("--topicinfo",help="information on pre-trained topics for warm-start. Don't set if numtopics is a list, [['LDA','results/lda_K100_D50_wiki10k_wiki1k/', '100']]",nargs='+', default=None)
+    parser.add_argument("--seed", help="seed for replicability [0]",type=int, default=0)
+    parser.add_argument("--maxiter", help="total number of mini-batches to train [1000]",type=int, default=1000)
+    parser.add_argument("--batchsize", help="mini-batch size [20]",type=int, default=20)
+    args = parser.parse_args()
+    run_experiment(args)
+    return
+
+def debug(method, topicinfo):
+    """
+    Test for correctness of various things by passing in arguments of interest
+    without the command-line.
+    """
+    # Warm-start training
+    args = TrainSpecs(train=False, method=method, K=[100], T=10, LLiter=100, progressiter=10, topiciter=100,
+                      inroot='wiki10k', heldoutroot='wiki1k', 
+                      topicinfo=topicinfo, seed=0, 
+                      maxiter=1000, batchsize=20)
+    run_experiment(args)
         
 if __name__ == '__main__':
     main()
