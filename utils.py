@@ -2,11 +2,12 @@ import numpy as n
 from scipy.special import gammaln, psi, beta
 
 class TrainSpecs:
-    def __init__(self, train=False, method='thdp', K=[100], T=10, LLiter=100, progressiter=10, topiciter=100,
-                      inroot='wiki10k', heldoutroot='wiki1k', 
+    def __init__(self, train=False, test=True, method='thdp', K=[100], T=10, LLiter=100, progressiter=10, topiciter=100,
+                      inroot='wiki10k', heldoutroot='wiki1k', tau=1024, kappa = 0.7,
                       topicinfo=['LDA','results/lda_K100_D50_wiki10k_wiki1k/','100'], seed=0, 
                       maxiter=1000, batchsize=20):
         self.train = train
+        self.test = test
         self.method = method
         self.K = K
         self.T = T
@@ -17,6 +18,8 @@ class TrainSpecs:
         self.seed = seed
         self.inroot = inroot
         self.heldoutroot = heldoutroot
+        self.tau = tau
+        self.kappa = 0.7
         self.topicinfo = topicinfo
         self.batchsize = batchsize
         return 

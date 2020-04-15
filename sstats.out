@@ -1,0 +1,22 @@
+Training corpus has 9971 documents
+Held-out corpus has 997 documents
+Save topics every 100 iterations, compute average train time every 10 iterations, report likelihood every 100 iterations
+Time to initialize 100-topic model, each document using 10 topics, is 0.12
+Started training ...
+seed 0, iter 0:  rho_t = 0.707107,  cumulative train time = 1.005991,  average train time = 1.01
+Traceback (most recent call last):
+  File "wikipedia.py", line 213, in <module>
+    main()
+  File "wikipedia.py", line 197, in main
+    run_experiment(args)
+  File "wikipedia.py", line 147, in run_experiment
+    tm.do_m_step(wordids, wordcts)
+  File "/home/gridsan/tdn/6435BMI/online-hdp/topicmodelvb.py", line 705, in do_m_step
+    varparams, sstats, ELBO = self.do_e_step(wordids, wordcts)
+  File "/home/gridsan/tdn/6435BMI/online-hdp/topicmodelvb.py", line 473, in do_e_step
+    n.mean(abs(zetad - lastzetad)) + n.mean(abs(phid - lastphid)))
+  File "/state/partition1/llgrid/pkg/anaconda/anaconda3-2020a/lib/python3.6/site-packages/numpy/core/fromnumeric.py", line 3118, in mean
+    out=out, **kwargs)
+  File "/state/partition1/llgrid/pkg/anaconda/anaconda3-2020a/lib/python3.6/site-packages/numpy/core/_methods.py", line 85, in _mean
+    ret = ret.dtype.type(ret / rcount)
+FloatingPointError: underflow encountered in double_scalars

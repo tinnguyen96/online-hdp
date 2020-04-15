@@ -2,3 +2,7 @@
 *.dat
 *.pyc
 *.log*
+*.png
+*.topics
+*.model
+*.txt

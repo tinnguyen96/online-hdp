@@ -5,6 +5,8 @@ import string
 import time
 import csv, math
 import numpy as np
+from tqdm import tqdm
+
 # read and organize data
 
 #3 2:3 4:5 5:3 --- document info (word: count)
@@ -126,6 +128,40 @@ def parse_line(line):
     d.length = len(d.words)
     return d
 
+def switch_format(root):
+    """
+    Input:
+        root: str, for instance "wiki10k"
+    Output:
+        join the wordids and wordcts file into one single .txt 
+        in the "0 234 10 345 5 ...
+                1 684 57 452 3 ... 
+                ... " format.
+    """
+    infile = root + "_wordids.csv"
+    with open(infile) as f:
+        D = sum(1 for line in f)
+        print("Started with %d lines" %D)
+    fids = list(csv.reader(open(root + "_wordids.csv")))
+    fcts = list(csv.reader(open(root + "_wordcts.csv")))
+    outname = root + ".txt"
+    outfile = open(outname,'w+')
+    for i in tqdm(range(D),desc='Processing line by line'):
+        ids = fids[i]
+        cts = fcts[i]
+        new = ids + cts
+        new[0::2] = ids
+        new[1::2] = cts # interleave the entries of ids and cts
+        new = [str(i)] + new # number the document
+        nextline = ' '.join(new)
+        outfile.write(nextline + '\n')
+    # how many lines were written?
+    outfile.close()
+    with open(outname) as f:
+        Dwritten = sum(1 for line in f)
+        print("Wrote %d lines" %Dwritten)
+    return 
+
 def parse_doc_list(docs, vocab):
     """
     Parse a document into a list of word ids and a list of counts,
@@ -196,6 +232,40 @@ def make_vocab(vocab):
         idxtoword[idx] = word
     # print("Vocabdict length %d while idxtoword length %d" %(len(vocabdict),len(idxtoword)))
     return (vocabdict, idxtoword)
+
+def clean_corpus(inroot):
+    """
+    Input: "wiki10k", for instance
+    Output: remove empty lines from corpus
+    """
+    cleanids = []
+    with open(inroot + "_wordids.csv") as f:
+        all_lines = list(csv.reader(f))
+        for i in range(len(all_lines)):
+            if len(all_lines[i]) == 0:
+                print("Empty line in ids detected at line %d" %i)
+            else:
+                cleanids.append(all_lines[i])
+                
+    cleancts = []
+    with open(inroot + "_wordcts.csv") as f:
+        all_lines = list(csv.reader(f))
+        for i in range(len(all_lines)):
+            if len(all_lines[i]) == 0:
+                print("Empty line in cts detected at line %d" %i)
+            else:
+                cleancts.append(all_lines[i])
+                
+    # Save corpus with no empty lines
+    idsname = "clean" + inroot + "_wordids.csv"
+    ctsname = "clean" + inroot + "_wordcts.csv"
+    with open(idsname, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(cleanids)
+    with open(ctsname, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerows(cleancts)
+    return
 
 def get_batch_from_disk(inroot, D, batch_size=None):
     """

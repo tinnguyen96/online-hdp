@@ -288,11 +288,26 @@ class _TopicModel:
         
         return
     
-    def init_doc(self, ids, cts):
+    def check_invariant(self, zetad, phid, tol=1e-10):
+        """
+        Inputs:
+            zetad: (self._T, self._K) topic-to-topic
+            phid: (self._T, len(ids)) topic assignments
+            tol: scalar, tolerance level
+        Outputs:
+            rowsums of zetad = 1
+            colsums of phid = 1
+        """
+        zinv = n.abs(n.sum(zetad, axis=1)-1) < tol
+        pinv = n.abs(n.sum(phid, axis=0)-1) < tol
+        return (n.all(zinv) and n.all(pinv))
+    
+    def init_doc(self, ids, cts, debug=False):
         """
         Inputs:
             ids: unique word indices
             cts: number of occurences of words in ids
+            debug: whether to check for invariants
         Outputs:
             initialize topic-to-topic and word-assignment using data but 
             stick-breaking using the prior
@@ -318,6 +333,12 @@ class _TopicModel:
         gamma1d = n.ones(self._T)
         gamma2d = self._alpha*n.ones(self._T)
         gamma2d[-1] = 0
+        
+         # check invariants
+        if (debug):
+            invariant = self.check_invariant(zetad, phid)
+            if (not invariant):
+                print("Something wrong with initialization")
 
         return (zetad, phid, gamma1d, gamma2d)
     
@@ -358,12 +379,13 @@ class _TopicModel:
         
         return term1 + term2 + term3
     
-    def do_e_step(self, wordids, wordcts, debug=False):
+    def do_e_step(self, wordids, wordcts, getelbo=False, debug=False):
         """
         Inputs:
             wordids: list of ids
             wordcts: list of cts
-            debug: whether or not to report ELBO
+            getelbo: whether to report ELBO
+            debug: whether to check invariants of local params
         Outputs:
             varparams: optimal local variational parameters
             sstats: sufficient statistics for global parameters update
@@ -382,7 +404,7 @@ class _TopicModel:
         sstats["lambda"] = n.zeros(self._lambda.shape)
         sstats["a"] = n.zeros(self._a.shape)
         
-        if (debug):
+        if (getelbo):
             ELBO = {}
         else:
             ELBO = None
@@ -398,9 +420,9 @@ class _TopicModel:
             Elogbetad = self._Elogbeta[:, ids]
             
             # initialize local variational parameters
-            zetad, phid, gamma1d, gamma2d = self.init_doc(ids, cts)       
-            
-            if (debug):
+            zetad, phid, gamma1d, gamma2d = self.init_doc(ids, cts, debug)       
+        
+            if (getelbo):
                 ELBO[d] = []
                 initELBO = self.L1(zetad, phid, gamma1d, gamma2d, ids, cts)
                 ELBO[d].append(initELBO)
@@ -434,13 +456,29 @@ class _TopicModel:
                 logphid = tempphid - logphidnorm[n.newaxis, :]
                 phid = n.exp(logphid)
                 
-                # evaluate ELBO in debug mode
-                if (debug):
+                # evaluate ELBO in getelbo mode
+                if (getelbo):
                     ELBO[d].append(self.L1(zetad, phid, gamma1d, gamma2d, ids, cts))
                 
+                # check if local params' invariants hold in debug mode
+                if (debug):
+                    invariant = self.check_invariant(zetad, phid)
+                    if (not invariant):
+                        print("Something wrong during coordinate ascent")
+                        print(zetad)
+                        print(phid)
+                
                 # If parameters didn't change much, we're done.
-                meanchange = 0.25*(n.mean(abs(gamma1d - lastgamma1d)) + n.mean(abs(gamma2d - lastgamma2d)) + \
-                        n.mean(abs(zetad - lastzetad)) + n.mean(abs(phid - lastphid)))
+                zetachange = n.mean(n.absolute(zetad - lastzetad+1e-100))
+                try:
+                    phichange = n.mean(n.absolute(phid - lastphid+1e-100))
+                except:
+                    phichange = 0
+                    print("Encountered error at document")
+                    print(ids)
+                    print(cts)
+                gammachange = n.mean(n.absolute(gamma1d - lastgamma1d)) + n.mean(n.absolute(gamma2d - lastgamma2d))
+                meanchange = 0.25*(zetachange + phichange) + 0.5*gammachange
                 
                 if (meanchange < meanchangethresh):
                     converged = True
@@ -453,7 +491,7 @@ class _TopicModel:
             
             # Contribution of document d to the expected sufficient
             # statistics for the M step.
-            sstats["lambda"][:, ids] += n.multiply(n.dot(zetad.transpose(), phid), cts)
+            sstats["lambda"][:, ids] += n.multiply(n.dot(zetad.transpose(), phid), cts) + 1e-100
             sstats["a"] += (n.sum(zetad,axis=0)).flatten()
 
         return (zeta, gamma1, gamma2), sstats, ELBO
@@ -469,7 +507,7 @@ class _TopicModel:
             topics, computing using both topic-to-topic and stick-breaking. 
         """
         # do E-step for the wordobs_ids portion of the document
-        varparams, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
+        varparams, _, _ = self.do_e_step([wordobs_ids],[wordobs_cts]) 
         zeta = varparams[0][0] # shape (self._T, self._K)
         gamma1 = varparams[1][0] # shape (self._T,)
         gamma2 = varparams[2][0] # shape (self._T,)
@@ -675,6 +713,24 @@ class T_dSB_DP(_TopicModel):
         varparams, sstats, ELBO = self.do_e_step(wordids, wordcts)
         
         # Update global parameters
+        
+        ## underflow encountered in true_divide after first update
+        """
+        print("underflow encountered in true_divide at update %d" %self._updatect)
+        print(sstats["lambda"])
+        print()
+        print(n.amax(sstats["lambda"],axis=1))
+        print()
+        print(sstats["lambda"]*self._D)
+        print()
+        print(self._lambda)
+        print()
+        print(rhot)
+        print(self._eta)
+        print(self._D)
+        print(len(wordids))
+        """
+        
         self._lambda = self._lambda * (1-rhot) + \
             rhot * (self._eta + self._D * sstats["lambda"] / len(wordids))
         self._Elogbeta = dirichlet_expectation(self._lambda)
@@ -684,7 +740,7 @@ class T_dSB_DP(_TopicModel):
         self._ainc = self._ainc * (1-rhot) + \
                 rhot * sstats["a"] * self._D / len(wordids)
         
-        # reorder topics (helps avoid bad local minima)
+        # reorder topics (helps avoid bad local maxima)
         if (reorder):
             lambdasum = n.sum(self._lambda, axis=1)
             idx = [i for i in reversed(n.argsort(lambdasum))]
@@ -810,7 +866,7 @@ class N_dSB_DP(_TopicModel):
         # Do an E step to update zeta, phi, gamma | lambda, a, b for this
         # mini-batch. This also returns the information about phi, zeta that
         # we need to update lambda, a, b
-        varparams, sstats = self.do_e_step(wordids, wordcts)
+        varparams, sstats, ELBO = self.do_e_step(wordids, wordcts)
         
         # Update global parameters
         self._lambda = self._lambda * (1-rhot) + \
