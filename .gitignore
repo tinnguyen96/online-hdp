@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 *.csv
 *.dat
 *.pyc
@@ -5,4 +6,9 @@
 *.png
 *.topics
 *.model
+=======
+*.model
+*.topics
+*.dat
+>>>>>>> d51d562c19d491b02ad87166bd62673614580749
 *.txt

@@ -27,6 +27,20 @@ def dirichlet_expectation(alpha):
         return(sp.psi(alpha) - sp.psi(np.sum(alpha)))
     return(sp.psi(alpha) - sp.psi(np.sum(alpha, 1))[:, np.newaxis])
 
+def expect_log_sticks(sticks):
+    """
+    For stick-breaking hdp, this returns the E[log(sticks)] 
+    """
+    dig_sum = sp.psi(np.sum(sticks, 0))
+    ElogW = sp.psi(sticks[0]) - dig_sum
+    Elog1_W = sp.psi(sticks[1]) - dig_sum
+
+    n = len(sticks[0]) + 1
+    Elogsticks = np.zeros(n)
+    Elogsticks[0:n-1] = ElogW
+    Elogsticks[1:] = Elogsticks[1:] + np.cumsum(Elog1_W)
+    return Elogsticks 
+
 def lda_e_step_half(doc, alpha, Elogbeta, split_ratio):
 
     n_train = int(doc.length * split_ratio)
