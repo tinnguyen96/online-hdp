@@ -11,7 +11,7 @@ np = onlinehdp.np
 
 def parse_args():
   parser = OptionParser()
-  parser.set_defaults(T=300, K=20, D=-1, W=-1, eta=0.01, alpha=1.0, gamma=1.0,
+  parser.set_defaults(T=300, K=20, D=9965, vocab=None, eta=0.01, alpha=1.0, gamma=1.0,
                       kappa=0.5, tau=1.0, batchsize=100, max_time=-1,
                       max_iter=-1, var_converge=0.0001, random_seed=999931111, 
                       corpus_name=None, data_path=None, test_data_path=None, 
@@ -25,8 +25,8 @@ def parse_args():
                     help="second level truncation [20]")
   parser.add_option("--D", type="int", dest="D",
                     help="number of documents [-1]")
-  parser.add_option("--W", type="int", dest="W",
-                    help="size of vocabulary [-1]")
+  parser.add_option("--vocab", type="str", dest="vocab",
+                    help="vocabulary file [dictnostops.txt]")
   parser.add_option("--eta", type="float", dest="eta",
                     help="the topic Dirichlet [0.01]")
   parser.add_option("--alpha", type="float", dest="alpha",
@@ -131,7 +131,10 @@ def run_online_hdp():
   options_file.close()
 
   print "creating online hdp instance."
-  ohdp = onlinehdp.online_hdp(options.T, options.K, options.D, options.W, 
+  # load vocab file to compute W
+  vocab = open(options.vocab).readlines()
+  W = len(vocab)
+  ohdp = onlinehdp.online_hdp(options.T, options.K, options.D, W, 
                               options.eta, options.alpha, options.gamma,
                               options.kappa, options.tau, options.scale,
                               options.adding_noise)

@@ -53,25 +53,34 @@ class corpus:
 #     return c
 
 def read_stream_data(f, num_docs):
-  c = corpus()
-  splitexp = re.compile(r'[ :]')
-  for i in range(num_docs):
-    line = f.readline()
-    line = line.strip()
-    if len(line) == 0:
-      break
-    d = document()
-    splitline = [int(i) for i in splitexp.split(line)]
-    wordids = splitline[1::2]
-    wordcts = splitline[2::2]
-    d.words = wordids
-    d.counts = wordcts
-    d.total = sum(d.counts)
-    d.length = len(d.words)
-    c.docs.append(d)
+    """ 
+    Inputs:
+        f: File Object
+        num_docs: scalar
+    Outputs:
+        c: corpus Object, whose docs instance variable is a list 
+        containing the num_docs documents read from the 
+        file f in a streaming manner. 
+    """
+    c = corpus()
+    splitexp = re.compile(r'[ :]')
+    for i in range(num_docs):
+        line = f.readline()
+        line = line.strip()
+        if len(line) == 0:
+            break
+        d = document()
+        splitline = [int(i) for i in splitexp.split(line)]
+        wordids = splitline[1::2]
+        wordcts = splitline[2::2]
+        d.words = wordids
+        d.counts = wordcts
+        d.total = sum(d.counts)
+        d.length = len(d.words)
+        c.docs.append(d)
 
-  c.num_docs = len(c.docs)
-  return c
+    c.num_docs = len(c.docs)
+    return c
 
 # This version is about 33% faster
 def read_data(filename):
