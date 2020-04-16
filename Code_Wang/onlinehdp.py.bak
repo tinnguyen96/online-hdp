@@ -7,7 +7,7 @@ import scipy.special as sp
 import os, sys, math, time
 import utils
 from corpus import document, corpus
-
+from itertools import izip
 import random
 
 meanchangethresh = 0.00001
@@ -177,7 +177,7 @@ class online_hdp:
         self.m_var_sticks[0] = 1.0
         #self.m_var_sticks[1] = self.m_gamma
         # make a uniform at beginning
-        self.m_var_sticks[1] = list(range(T-1, 0, -1))
+        self.m_var_sticks[1] = range(T-1, 0, -1)
 
         self.m_varphi_ss = np.zeros(T)
 
@@ -204,7 +204,7 @@ class online_hdp:
         self.m_Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)
 
         num_samples = min(c.num_docs, burn_in_samples)
-        ids = random.sample(list(range(c.num_docs)), num_samples)
+        ids = random.sample(range(c.num_docs), num_samples)
         docs = [c.docs[id] for id in ids]
 
         unique_words = dict()
@@ -245,7 +245,7 @@ class online_hdp:
         unique_words = dict()
         word_list = []
         if adding_noise:
-          word_list = list(range(self.m_W))
+          word_list = range(self.m_W)
           for w in word_list:
             unique_words[w] = w
         else:
@@ -283,7 +283,7 @@ class online_hdp:
 
         if adding_noise:
             # add noise to the ss
-            print("adding noise at this stage...")
+            print "adding noise at this stage..."
 
             ## old noise
             noise = np.random.gamma(1.0, 1.0, ss.m_var_beta_ss.shape)
@@ -396,7 +396,7 @@ class online_hdp:
             old_likelihood = likelihood
 
             if converge < -0.000001:
-                print("warning, likelihood is decreasing!")
+                print "warning, likelihood is decreasing!"
             
             iter += 1
             
@@ -460,7 +460,7 @@ class online_hdp:
     def save_topics(self, filename):
         if not self.m_status_up_to_date:
             self.update_expectations()
-        f = open(filename, "w") 
+        f = file(filename, "w") 
         betas = self.m_lambda + self.m_eta
         for beta in betas:
             line = ' '.join([str(x) for x in beta])  
