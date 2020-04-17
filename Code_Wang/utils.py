@@ -45,3 +45,22 @@ def argmax(x):
 			idx_max = i		
 
 	return idx_max			
+
+
+def GEM_expectation(tau1, tau2):
+    """
+    Inputs:
+        tau1: 1 x K, positive numbers, last number is 1 
+        tau2: 1 x K, non-negative numbers, last number is 0
+    Outputs:
+        E(theta(k)) where theta(k) = Beta(tau1(k), tau2(k)) prod{i=1}{k-1} (1-Beta(tau1(k), tau2(k)))
+    """
+    # theta(k) = p(k) x prod_{i=1}^{k-1} (1-p(i)), each p(i) Beta(tau1(i), tau2(i))
+    # and they are independent because of mean-field.
+    Ep = tau1/(tau1+tau2)
+    Em1p = 1-Ep # last value is 0 since theta(K) is Beta(1,0)
+    Em1p[0,-1] = 1 # hack
+    cumu = np.cumprod(Em1p, axis=1) # shape (K,)
+    ratiop = Ep/Em1p # shape (1, K)
+    theta = np.multiply(ratiop, cumu) # shape (1, K)
+    return theta

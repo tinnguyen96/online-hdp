@@ -41,20 +41,40 @@ def expect_log_sticks(sticks):
     Elogsticks[1:] = Elogsticks[1:] + np.cumsum(Elog1_W)
     return Elogsticks 
 
-def lda_e_step_half(doc, alpha, Elogbeta, split_ratio):
-
+def lda_e_step_split(doc, alpha, Elogbeta, beta, split_ratio=0.75, max_iter=100):
+    """
+    Returns held-out log-likelihood across document's unseen words, based off the document's
+    inferred topic proprtions.
+    
+    Inputs:
+        doc: document Object (from corpus.py), doc.words = list of unique words, 
+            doc.counts = list of number of word occurrences
+        alpha: (self._T,) vector, Dirichlet parameter of document's topic proportions 
+            vector. In usual LDA, it's symmetric and typically not learned. In HDP,
+            it's based off of the variational distribution of corpus-level G0.
+        Elogbeta: (self._T, self._W) matrix, expectations of the log of topic parameters
+        beta: (self._T, self._W) matrix, word probabilities of the topics
+        split_ratio: scalar, proportion of words in doc to use as the observed.
+        max_iter: scalar, how many steps of coordinate ascent to run to fit the topic 
+            proportions.
+    Outputs:
+        score: total log-likelihood
+        np.sum(counts): total number of unseen words
+        gamma: expected topic proportions
+    """
+        
     n_train = int(doc.length * split_ratio)
     n_test = doc.length - n_train
    
-   # split the document
+    # split the document
     words_train = doc.words[:n_train]
     counts_train = doc.counts[:n_train]
     words_test = doc.words[n_train:]
     counts_test = doc.counts[n_train:]
     
+    # find document's topic proportions
     gamma = np.ones(len(alpha))  
     expElogtheta = np.exp(dirichlet_expectation(gamma)) 
-
     expElogbeta = np.exp(Elogbeta)
     expElogbeta_train = expElogbeta[:, words_train]
     phinorm = np.dot(expElogtheta, expElogbeta_train) + 1e-100
@@ -72,85 +92,13 @@ def lda_e_step_half(doc, alpha, Elogbeta, split_ratio):
         if (meanchange < meanchangethresh):
             break
     gamma = gamma/np.sum(gamma)
+    
+    # find total held-out log-likelihood
     counts = np.array(counts_test)
-    expElogbeta_test = expElogbeta[:, words_test]
-    score = np.sum(counts * np.log(np.dot(gamma, expElogbeta_test) + 1e-100))
+    beta_test = beta[:, words_test]
+    score = np.sum(counts * np.log(np.dot(gamma, beta_test) + 1e-100))
 
     return (score, np.sum(counts), gamma)
-
-def lda_e_step_split(doc, alpha, beta, max_iter=100):
-    half_len = int(doc.length/2) + 1
-    idx_train = [2*i for i in range(half_len) if 2*i < doc.length]
-    idx_test = [2*i+1 for i in range(half_len) if 2*i+1 < doc.length]
-   
-   # split the document
-    words_train = [doc.words[i] for i in idx_train]
-    counts_train = [doc.counts[i] for i in idx_train]
-    words_test = [doc.words[i] for i in idx_test]
-    counts_test = [doc.counts[i] for i in idx_test]
-
-    gamma = np.ones(len(alpha))  
-    expElogtheta = np.exp(dirichlet_expectation(gamma)) 
-    betad = beta[:, words_train]
-    phinorm = np.dot(expElogtheta, betad) + 1e-100
-    counts = np.array(counts_train)
-    iter = 0
-    while iter < max_iter:
-        lastgamma = gamma
-        iter += 1
-        likelihood = 0.0
-        gamma = alpha + expElogtheta * np.dot(counts/phinorm,  betad.T)
-        Elogtheta = dirichlet_expectation(gamma)
-        expElogtheta = np.exp(Elogtheta)
-        phinorm = np.dot(expElogtheta, betad) + 1e-100
-        meanchange = np.mean(abs(gamma-lastgamma))
-        if (meanchange < meanchangethresh):
-            break
-
-    gamma = gamma/np.sum(gamma)
-    counts = np.array(counts_test)
-    betad = beta[:, words_test]
-    score = np.sum(counts * np.log(np.dot(gamma, betad) + 1e-100))
-
-    return (score, np.sum(counts), gamma)
-
-def lda_e_step(doc, alpha, beta, max_iter=100):
-    """
-    Inputs:
-        doc: document Object (whose instance variables are defined in 
-            corpus.py). doc.words: unique words, doc.count: number of 
-            word occurences.
-        alpha: (self._T,) vector, ``prior'' parameters driving the document's 
-            topic proportions Dir(alpha)
-        beta: (self._T, self._W) matrix, word probabilities for the 
-            topics
-    Outputs:
-        
-    """
-    gamma = np.ones(len(alpha))  
-    expElogtheta = np.exp(dirichlet_expectation(gamma)) 
-    betad = beta[:, doc.words]
-    phinorm = np.dot(expElogtheta, betad) + 1e-100
-    counts = np.array(doc.counts)
-    iter = 0
-    while iter < max_iter:
-        lastgamma = gamma
-        iter += 1
-        likelihood = 0.0
-        gamma = alpha + expElogtheta * np.dot(counts/phinorm,  betad.T)
-        Elogtheta = dirichlet_expectation(gamma)
-        expElogtheta = np.exp(Elogtheta)
-        phinorm = np.dot(expElogtheta, betad) + 1e-100
-        meanchange = np.mean(abs(gamma-lastgamma))
-        if (meanchange < meanchangethresh):
-            break
-
-    likelihood = np.sum(counts * np.log(phinorm))
-    likelihood += np.sum((alpha-gamma) * Elogtheta)
-    likelihood += np.sum(sp.gammaln(gamma) - sp.gammaln(alpha))
-    likelihood += sp.gammaln(np.sum(alpha)) - sp.gammaln(np.sum(gamma))
-
-    return (likelihood, gamma)
 
 class suff_stats:
     def __init__(self, T, Wt, Dt):
@@ -469,15 +417,20 @@ class online_hdp:
         self.m_timestamp[:] = self.m_updatect
         self.m_status_up_to_date = True
 
-    def save_topics(self, filename):
+    def save_topics(self, topicsfile, sticksfile):
         if not self.m_status_up_to_date:
             self.update_expectations()
-        f = open(filename, "w") 
+        # save topics' Dirichlet parameters
+        f = open(topicsfile, "w") 
         betas = self.m_lambda + self.m_eta
         for beta in betas:
             line = ' '.join([str(x) for x in beta])  
             f.write(line + '\n')
         f.close()
+        # save stick-breaking parameters
+        np.savetxt(sticksfile["a"], self.m_var_sticks[0])
+        np.savetxt(sticksfile["b"], self.m_var_sticks[1])
+        return 
 
     def hdp_to_lda(self):
         # compute the lda almost equivalent hdp.
@@ -498,8 +451,12 @@ class online_hdp:
         # beta
         beta = (self.m_lambda + self.m_eta) / (self.m_W * self.m_eta + \
                 self.m_lambda_sum[:, np.newaxis])
+        
+        # Elogbeta
+        
+        Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)
 
-        return (alpha, beta)
+        return (alpha, beta, Elogbeta)
 
     def infer_only(self, docs, half_train_half_test=False, split_ratio=0.9, iterative_average=False):
         # be sure to run update_expectations()

@@ -15,7 +15,7 @@ def parse_args():
                       kappa=0.5, tau=1.0, batchsize=100, max_time=-1,
                       max_iter=-1, var_converge=0.0001, random_seed=999931111, 
                       corpus_name=None, data_path=None, test_data_path=None, 
-                      test_data_path_in_folds=None, directory=None, save_lag=500, pass_ratio=0.5,
+                      test_data_path_in_folds=None, directory=None, save_lag=500, scale_save_lag=0, pass_ratio=0.5,
                       new_init=False, scale=1.0, adding_noise=False,
                       seq_mode=False, fixed_lag=False)
 
@@ -59,7 +59,9 @@ def parse_args():
     parser.add_argument("--directory", type=str, dest="directory",
                     help="output directory [None]")
     parser.add_argument("--save_lag", type=int, dest="save_lag",
-                    help="the minimal saving lag, increasing as save_lag * 2^i, with max i as 10; default 500.")
+                    help="the minimal saving lag, increasing as save_lag * 2^scale_save_lag, with max i as 10; default 500.")
+    parser.add_argument("--scale_save_lag", type=int, dest="scale_save_lag",
+                    help="scale factor of saving lag, increasing as save_lag * 2^scale_save_lag; default 1")
     parser.add_argument("--pass_ratio", type=float, dest="pass_ratio",
                     help="The pass ratio for each split of training data [0.5]")
     parser.add_argument("--new_init", action="store_true", dest="new_init",
@@ -154,13 +156,13 @@ def run_online_hdp():
 
     if options.test_data_path is not None:
         test_log_file = open("%s/test-log.dat" % result_directory, "w") 
-        test_log_file.write("iteration time doc.count score word.count score.split word.count.split\n")
+        test_log_file.write("iteration time doc.count score word.count avg-score\n")
 
     print("starting online variational inference.")
     while True:
         iter += 1
-        if iter % 1000 == 1:
-            print("iteration: %09d" % iter)
+        if iter % 100 == 1:
+            print("iteration: %05d" % iter)
         t0 = time.clock()
 
         # Sample the documents.
@@ -194,30 +196,31 @@ def run_online_hdp():
         if total_doc_count % options.save_lag == 0:
             if not options.fixed_lag and save_lag_counter < 10:
                 save_lag_counter += 1
-                options.save_lag = options.save_lag * 2
+                options.save_lag = options.save_lag * options.scale_save_lag
 
             # Save the model.
-            ohdp.save_topics('%s/doc_count-%d.topics' %  (result_directory, total_doc_count))
+            topicsfile = '%s/doc_count-%d.topics' %  (result_directory, total_doc_count)
+            sticksfile = {}
+            sticksfile["a"] = '%s/doc_count-%d.a' %  (result_directory, total_doc_count)
+            sticksfile["b"] = '%s/doc_count-%d.b' %  (result_directory, total_doc_count)
+            ohdp.save_topics(topicsfile, sticksfile)
             # pickle.dump(ohdp, open('%s/doc_count-%d.model' % (result_directory, total_doc_count), 'w'), -1)
 
             if options.test_data_path is not None:
-                print("\tworking on predictions.")
-                (lda_alpha, lda_beta) = ohdp.hdp_to_lda()
-                # prediction on the fixed test in folds
+                print("\tconvert hdp to almost equivalent lda.")
+                (lda_alpha, lda_beta, lda_Elogbeta) = ohdp.hdp_to_lda()
                 print("\tworking on fixed test data.")
                 test_score = 0.0
                 test_score_split = 0.0
                 c_test_word_count_split = 0
                 for doc in c_test.docs:
-                    (likelihood, gamma) = onlinehdp.lda_e_step(doc, lda_alpha, lda_beta)
+                    (likelihood, count, gamma) = onlinehdp.lda_e_step_split(doc, lda_alpha, lda_Elogbeta, lda_beta)
                     test_score += likelihood
-                    (likelihood, count, gamma) = onlinehdp.lda_e_step_split(doc, lda_alpha, lda_beta)
-                    test_score_split += likelihood
                     c_test_word_count_split += count
+                avg_score = test_score/c_test_word_count_split
 
-                test_log_file.write("%d %d %d %.5f %d %.5f %d\n" % (iter, total_time,
-                                    total_doc_count, test_score, c_test_word_count, 
-                                    test_score_split, c_test_word_count_split))
+                test_log_file.write("%d %d %d %.5f %d %.5f \n" % (iter, total_time,
+                                    total_doc_count, test_score, c_test_word_count_split, avg_score))
                 test_log_file.flush()
 
         # read another split.
@@ -243,22 +246,18 @@ def run_online_hdp():
 
     # Makeing final predictions.
     if options.test_data_path is not None:
-        (lda_alpha, lda_beta) = ohdp.hdp_to_lda()
+        (lda_alpha, lda_beta, lda_Elogbeta) = ohdp.hdp_to_lda()
         print("\tworking on fixed test data.")
         test_score = 0.0
-        test_score_split = 0.0
         c_test_word_count_split = 0
         for doc in c_test.docs:
-            (likelihood, gamma) = onlinehdp.lda_e_step(doc, lda_alpha, lda_beta)
+            (likelihood, count, gamma) = onlinehdp.lda_e_step_split(doc, lda_alpha, lda_Elogbeta, lda_beta)
             test_score += likelihood
-            (likelihood, count, gamma) = onlinehdp.lda_e_step_split(doc, lda_alpha, lda_beta)
-            test_score_split += likelihood
             c_test_word_count_split += count
 
-        test_log_file.write("%d %d %d %.5f %d %.5f %d\n" % (iter, total_time,
-                            total_doc_count, test_score, c_test_word_count, 
-                            test_score_split, c_test_word_count_split))
-        test_log_file.close()
+        test_log_file.write("%d %d %d %.5f %d %.5f \n" % (iter, total_time,
+                            total_doc_count, test_score, c_test_word_count_split, avg_score))
+        test_log_file.flush()
 
 if __name__ == '__main__':
     run_online_hdp()
