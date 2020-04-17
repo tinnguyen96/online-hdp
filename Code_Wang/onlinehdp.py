@@ -115,6 +115,18 @@ def lda_e_step_split(doc, alpha, beta, max_iter=100):
     return (score, np.sum(counts), gamma)
 
 def lda_e_step(doc, alpha, beta, max_iter=100):
+    """
+    Inputs:
+        doc: document Object (whose instance variables are defined in 
+            corpus.py). doc.words: unique words, doc.count: number of 
+            word occurences.
+        alpha: (self._T,) vector, ``prior'' parameters driving the document's 
+            topic proportions Dir(alpha)
+        beta: (self._T, self._W) matrix, word probabilities for the 
+            topics
+    Outputs:
+        
+    """
     gamma = np.ones(len(alpha))  
     expElogtheta = np.exp(dirichlet_expectation(gamma)) 
     betad = beta[:, doc.words]
@@ -245,9 +257,9 @@ class online_hdp:
         unique_words = dict()
         word_list = []
         if adding_noise:
-          word_list = list(range(self.m_W))
-          for w in word_list:
-            unique_words[w] = w
+            word_list = list(range(self.m_W))
+            for w in word_list:
+                unique_words[w] = w
         else:
             for doc in docs:
                 for w in doc.words:
@@ -278,8 +290,8 @@ class online_hdp:
             count += doc.total
             score += doc_score
             if i in unseen_ids:
-              unseen_score += doc_score
-              unseen_count += doc.total
+                unseen_score += doc_score
+                unseen_count += doc.total
 
         if adding_noise:
             # add noise to the ss

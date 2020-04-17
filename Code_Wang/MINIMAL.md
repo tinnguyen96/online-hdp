@@ -1,1 +1,1 @@
-python run_online_hdp.py --T 100 --K 10 --D 9965 --max_time 10000 --max_iter 1000 --vocab dictnostops.txt --corpus_name wiki --data_path wiki10k.txt --test_data_path wiki1k.txt --seq_mode True --directory results
+python run_online_hdp.py --T 100 --K 10 --D 9965 --max_time 10000 --max_iter 1000 --vocab dictnostops.txt --corpus_name wiki --data_path wiki10k.txt --test_data_path wiki1k.txt --seq_mode --directory results

@@ -198,7 +198,7 @@ def run_online_hdp():
 
             # Save the model.
             ohdp.save_topics('%s/doc_count-%d.topics' %  (result_directory, total_doc_count))
-            pickle.dump(ohdp, open('%s/doc_count-%d.model' % (result_directory, total_doc_count), 'w'), -1)
+            # pickle.dump(ohdp, open('%s/doc_count-%d.model' % (result_directory, total_doc_count), 'w'), -1)
 
             if options.test_data_path is not None:
                 print("\tworking on predictions.")
@@ -236,7 +236,7 @@ def run_online_hdp():
 
     print("Saving the final model and topics.")
     ohdp.save_topics('%s/final.topics' %  result_directory)
-    pickle.dump(ohdp, open('%s/final.model' % result_directory, 'w'), -1)
+    # pickle.dump(ohdp, open('%s/final.model' % result_directory, 'w'), -1)
 
     if options.seq_mode:
         train_file.close()
