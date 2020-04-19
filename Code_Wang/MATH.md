@@ -26,6 +26,9 @@ m_K: document-level cap on number of topics
 m_gamma: Beta(1,m_gamma) of corpus-level stick-breaking
 m_alpha: Beta(1,m_alpha) of document-level stick-breaking
 
+### Subtle
+m_lambda: change in topics' Dirichlet paramters
+
 ### Trickier
 m_var_sticks: variational parameters of corpus-level stick-breaking
 m_varphi_ss: amount of change to apply to the first coordinate of m_var_sticks

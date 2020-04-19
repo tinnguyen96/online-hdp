@@ -9,13 +9,31 @@ import argparse
 from glob import glob
 np = onlinehdp.np
 
+def maketopicfile(topicinfo):
+    """Create dictionary that topic models need to load pre-trained topics """
+    
+    if (topicinfo is None):
+        topicfile = None
+    else:
+        othermethod = topicinfo[0]
+        iteration = topicinfo[2]
+        topicfile = {}
+        topicfile["method"] = othermethod
+        topicfile["lambda"] = topicinfo[1] + "lambda-" + iteration + ".dat"
+        if (othermethod == "N_dSB_DP"):
+            topicfile["a"] = topicinfo[1] + "a-" + iteration + ".dat"
+        elif (othermethod == "T_dSB_DP"):
+            topicfile["a"] = topicinfo[1] + "a-" + iteration + ".dat"
+            topicfile["b"] = topicinfo[1] + "b-" + iteration + ".dat"
+    return topicfile
+
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.set_defaults(T=300, K=20, D=9965, vocab=None, eta=0.01, alpha=1.0, gamma=1.0,
-                      kappa=0.5, tau=1.0, batchsize=100, max_time=-1,
-                      max_iter=-1, var_converge=0.0001, random_seed=999931111, 
-                      corpus_name=None, data_path=None, test_data_path=None, 
-                      test_data_path_in_folds=None, directory=None, save_lag=500, scale_save_lag=0, pass_ratio=0.5,
+    parser.set_defaults(T=100, K=10, D=9965, vocab="dictnostops.txt", eta=0.01, alpha=1.0, gamma=1.0,
+                      kappa=0.7, tau=1024, batchsize=100, max_time=10000,
+                      max_iter=1000, var_converge=0.0001, random_seed=0, 
+                      corpus_name="wiki", data_path="wiki10k.txt", test_data_path="wiki1k.txt", topic_info = None,
+                      directory="results", save_lag=500, scale_save_lag=2, pass_ratio=0.5,
                       new_init=False, scale=1.0, adding_noise=False,
                       seq_mode=False, fixed_lag=False)
 
@@ -53,9 +71,7 @@ def parse_args():
                     help="training data path or pattern [None]")
     parser.add_argument("--test_data_path", type=str, dest="test_data_path",
                     help="testing data path [None]")
-    parser.add_argument("--test_data_path_in_folds", type=str,
-                    dest="test_data_path_in_folds",
-                    help="testing data prefix for different folds [None], not used anymore")
+    parser.add_argument("--topic_info",help="information on pre-trained topics for warm-start. Don't set if numtopics is a list, [['LDA','results/lda_K100_D50_wiki10k_wiki1k/', '100']]",nargs='+')
     parser.add_argument("--directory", type=str, dest="directory",
                     help="output directory [None]")
     parser.add_argument("--save_lag", type=int, dest="save_lag",
@@ -102,27 +118,17 @@ def run_online_hdp():
         test_data_path = options.test_data_path
         c_test = read_data(test_data_path)
         c_test_word_count = sum([doc.total for doc in c_test.docs])
-
-    if options.test_data_path_in_folds is not None:
-        test_data_path_in_folds = options.test_data_path_in_folds
-        test_data_in_folds_filenames = glob(test_data_path_in_folds)
-        test_data_in_folds_filenames.sort()
-        num_folds = len(test_data_in_folds_filenames)/2
-        test_data_train_filenames = []
-        test_data_test_filenames = []
-
-        for i in range(num_folds):
-          test_data_train_filenames.append(test_data_in_folds_filenames[2*i+1])
-          test_data_test_filenames.append(test_data_in_folds_filenames[2*i])
-
-        c_test_train_folds = [read_data(filename) for filename in test_data_train_filenames]
-        c_test_test_folds = [read_data(filename) for filename in test_data_test_filenames]
+        
+    topicfile = maketopicfile(options.topic_info)
 
     result_directory = "%s/corpus-%s-kappa-%.1f-tau-%.f-batchsize-%d" % (options.directory,
                                                                        options.corpus_name,
                                                                        options.kappa, 
                                                                        options.tau, 
                                                                        options.batchsize)
+    if not topicfile is None:
+        result_directory = result_directory + "-init-%s%s" %(options.topic_info[0], options.topic_info[2])
+
     print("creating directory %s" % result_directory)
     if not os.path.isdir(result_directory):
         os.makedirs(result_directory)
@@ -136,7 +142,8 @@ def run_online_hdp():
     # load vocab file to compute W
     vocab = open(options.vocab).readlines()
     W = len(vocab)
-    ohdp = onlinehdp.online_hdp(options.T, options.K, options.D, W, 
+    
+    ohdp = onlinehdp.online_hdp(options.T, options.K, options.D, W, topicfile,
                               options.eta, options.alpha, options.gamma,
                               options.kappa, options.tau, options.scale,
                               options.adding_noise)
@@ -155,7 +162,7 @@ def run_online_hdp():
     log_file.write("iteration time doc.count score word.count unseen.score unseen.word.count\n")
 
     if options.test_data_path is not None:
-        test_log_file = open("%s/test-log.dat" % result_directory, "w") 
+        test_log_file = open("%s/test-log_seed%d.dat" % (result_directory, options.random_seed), "w") 
         test_log_file.write("iteration time doc.count score word.count avg-score\n")
 
     print("starting online variational inference.")
@@ -198,13 +205,13 @@ def run_online_hdp():
                 save_lag_counter += 1
                 options.save_lag = options.save_lag * options.scale_save_lag
 
-            # Save the model.
-            topicsfile = '%s/doc_count-%d.topics' %  (result_directory, total_doc_count)
-            sticksfile = {}
-            sticksfile["a"] = '%s/doc_count-%d.a' %  (result_directory, total_doc_count)
-            sticksfile["b"] = '%s/doc_count-%d.b' %  (result_directory, total_doc_count)
-            ohdp.save_topics(topicsfile, sticksfile)
-            # pickle.dump(ohdp, open('%s/doc_count-%d.model' % (result_directory, total_doc_count), 'w'), -1)
+            # Save the topics for one random_seed
+            if (options.random_seed == 0):
+                topicsfile = '%s/doc_count-%d.topics' %  (result_directory, total_doc_count)
+                sticksfile = {}
+                sticksfile["a"] = '%s/doc_count-%d.a' %  (result_directory, total_doc_count)
+                sticksfile["b"] = '%s/doc_count-%d.b' %  (result_directory, total_doc_count)
+                ohdp.save_topics(topicsfile, sticksfile)
 
             if options.test_data_path is not None:
                 print("\tconvert hdp to almost equivalent lda.")
@@ -236,11 +243,15 @@ def run_online_hdp():
         if (options.max_iter != -1 and iter > options.max_iter) or (options.max_time !=-1 and total_time > options.max_time):
               break
     log_file.close()
-
-    print("Saving the final model and topics.")
-    ohdp.save_topics('%s/final.topics' %  result_directory)
-    # pickle.dump(ohdp, open('%s/final.model' % result_directory, 'w'), -1)
-
+    
+    if (options.random_seed == 0):
+        print("Saving the final model and topics.")
+        topicsfile = '%s/final.topics' %  result_directory
+        sticksfile = {}
+        sticksfile["a"] = '%s/final.a' %  result_directory
+        sticksfile["b"] = '%s/final.b' %  result_directory
+        ohdp.save_topics(topicsfile, sticksfile)
+    
     if options.seq_mode:
         train_file.close()
 

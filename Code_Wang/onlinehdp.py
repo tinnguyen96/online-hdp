@@ -27,19 +27,35 @@ def dirichlet_expectation(alpha):
         return(sp.psi(alpha) - sp.psi(np.sum(alpha)))
     return(sp.psi(alpha) - sp.psi(np.sum(alpha, 1))[:, np.newaxis])
 
-def expect_log_sticks(sticks):
+def truncation_Elogprops(sticks):
     """
-    For stick-breaking hdp, this returns the E[log(sticks)] 
+    Inputs:
+        sticks: (2,T-1) matrix 
+    Outputs:
+        E[log props] is (T,) vector of expected log proportions. 
+        In general, props[i] = v[i]*prod_{j=1}^{i-1} (1-v[j])
+        where v's are independent, v(i) sim Beta(sticks[0,i], sticks[1,i]); except 
+        props[T-1] = prod_{j=1}^{T-1} (1-v[j])
     """
     dig_sum = sp.psi(np.sum(sticks, 0))
     ElogW = sp.psi(sticks[0]) - dig_sum
     Elog1_W = sp.psi(sticks[1]) - dig_sum
 
     n = len(sticks[0]) + 1
-    Elogsticks = np.zeros(n)
-    Elogsticks[0:n-1] = ElogW
-    Elogsticks[1:] = Elogsticks[1:] + np.cumsum(Elog1_W)
-    return Elogsticks 
+    Elogprops = np.zeros(n)
+    Elogprops[0:n-1] = ElogW
+    Elogprops[1:] = Elogprops[1:] + np.cumsum(Elog1_W)
+    return Elogprops 
+
+def nnfa_Elogprops(a):
+    """
+    Inputs:
+        a: (T,) vector 
+    Outputs:
+        E[log props] is (T,) vector where props comes from Dir(a)
+    """
+    Elogprops = dirichlet_expectation(a)
+    return Elogprops 
 
 def lda_e_step_split(doc, alpha, Elogbeta, beta, split_ratio=0.75, max_iter=100):
     """
@@ -100,6 +116,7 @@ def lda_e_step_split(doc, alpha, Elogbeta, beta, split_ratio=0.75, max_iter=100)
 
     return (score, np.sum(counts), gamma)
 
+# helper class to perform lazy update of topics.
 class suff_stats:
     def __init__(self, T, Wt, Dt):
         self.m_batchsize = Dt
@@ -112,16 +129,18 @@ class suff_stats:
 
 class online_hdp:
     ''' hdp model using stick breaking'''
-    def __init__(self, T, K, D, W, eta, alpha, gamma, kappa, tau, scale=1.0, adding_noise=False):
+    def __init__(self, T, K, D, W, topicfile, eta, alpha, gamma, kappa, tau, scale=1.0, adding_noise=False):
         """
         this follows the convention of the HDP paper
+        T: top level truncation level
+        K: second level truncation level
+        D: number of documents in the corpus
+        W: size of vocab
+        topicfile: Dictionary containing path to some other topic model's 
+            output topics
         gamma: first level concentration
         alpha: second level concentration
         eta: the topic Dirichlet
-        T: top level truncation level
-        K: second level truncation level
-        W: size of vocab
-        D: number of documents in the corpus
         kappa: learning rate
         tau: slow down parameter
         """
@@ -132,18 +151,28 @@ class online_hdp:
         self.m_K = K
         self.m_alpha = alpha
         self.m_gamma = gamma
-
-        self.m_var_sticks = np.zeros((2, T-1))
-        self.m_var_sticks[0] = 1.0
-        #self.m_var_sticks[1] = self.m_gamma
-        # make a uniform at beginning
-        self.m_var_sticks[1] = list(range(T-1, 0, -1))
-
-        self.m_varphi_ss = np.zeros(T)
-
-        self.m_lambda = np.random.gamma(1.0, 1.0, (T, W)) * D*100/(T*W)-eta
         self.m_eta = eta
-        self.m_Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)
+        self.m_var_sticks = np.zeros((2, T-1))
+        
+        mask = np.zeros((self.m_T, self.m_T))
+        for i in range(self.m_T):
+            for j in range(self.m_T):
+                mask[i,j] = int(j > i)
+        self.m_Tmask = mask # size (self.m_T, self.m_T)
+        
+        # initialize topics and proportions from scratch
+        if (topicfile is None):
+            self.m_var_sticks[0] = 1.0
+            # make a uniform at beginning
+            self.m_var_sticks[1] = list(range(T-1, 0, -1))
+            self.m_lambda = np.random.gamma(1.0, 1.0, (T, W)) * D*100/(T*W)-eta
+        else:
+            topics, self.m_var_sticks[0], self.m_var_sticks[1] = self.convert_topics(topicfile)
+            self.m_lambda = topics - self.m_eta
+            print("Successfully loaded topics from %s" %topicfile["lambda"])
+            
+        self.m_Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)    
+        self.m_varphi_ss = np.zeros(T)
 
         self.m_tau = tau + 1
         self.m_kappa = kappa
@@ -154,9 +183,69 @@ class online_hdp:
         self.m_num_docs_parsed = 0
 
         # Timestamps and normalizers for lazy updates
+        ## m_timestamp[w] = the last time (measured in m_updatect, the number of M-steps)
+        ## that w was updated
         self.m_timestamp = np.zeros(self.m_W, dtype=int)
+        ## m_r[i] = if i M-steps has passed without the word receiving any update
+        ## and now is the time to update, how much decay to enforce to m_lambda
         self.m_r = [0]
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
+        
+    def convert_topics(self, topicfile):
+        """
+        Convert pre-trained topics of another method 
+        into the suitable format for warm-start training.      
+        
+        Inputs:
+            topicfile = dictionary, topicfile["lambda"] is path to topics
+                topicfile["a"] is path to a, topicfile["method"] = "N_dSB_DP"
+                for instance. 
+        Outputs:
+            topics: topics' Dirichlet parameters
+            a: first T-1 stick-breaking variables' first parameters
+            b: first T-1 stick-breaking variables' second parameters
+        
+        Remarks:
+            the choice of a and b for topicfile["method"] = "LDA" feels 
+            reasonable, but could be improved.
+        """
+        topics = np.loadtxt(topicfile["lambda"])
+        assert topics.shape == (self.m_T,self.m_W), "Wrong shape of topics"
+        
+        if (topicfile["method"] == "T_dSB_DP"):
+            a = np.loadtxt(topicfile["a"])
+            b = np.loadtxt(topicfile["b"])
+            
+        elif (topicfile["method"] == "N_dSB_DP"):
+            # re-order topics by sum of Dirichlet parameters
+            topicssum = np.sum(topics, axis=1)
+            idx = [i for i in reversed(np.argsort(topicssum))]
+            topics = topics[idx,:]
+            a = np.loadtxt(topicfile["a"])
+            a = a[idx]
+            a[-1] = 1.0
+            ainc = a - 1.0
+            # N_dsB_DP doesn't use b, so we have to form new estimates
+            # based on a
+            b = self.m_gamma + np.dot(self.m_Tmask, ainc)
+            b[-1] = 0
+            
+        elif (topicfile["method"] == "LDA"):
+            # re-order topics by sum of Dirichlet parameters
+            topicssum = np.sum(topics, axis=1)
+            idx = [i for i in reversed(np.argsort(topicssum))]
+            topics = topics[idx,:]
+            # compute mean of each topics' top 100 occuring words
+            wordsorted = np.fliplr(np.sort(topics,axis=1))
+            # print(wordsorted)
+            wordmeans = np.mean(wordsorted[:,0:100], axis=1)
+            a = np.maximum(wordmeans, 1.0)
+            a[-1] = 1.0
+            ainc = a - 1.0
+            b = self.m_gamma + np.dot(self.m_Tmask, ainc)
+            b[-1] = 0 
+        
+        return (topics, a[:self.m_T-1], b[:self.m_T-1])
 
     def new_init(self, c):
         self.m_lambda = 1.0/self.m_W + 0.01 * np.random.gamma(1.0, 1.0, \
@@ -176,7 +265,7 @@ class online_hdp:
                     word_list.append(w)
         Wt = len(word_list) # length of words in these documents
 
-        Elogsticks_1st = expect_log_sticks(self.m_var_sticks) # global sticks
+        Elogsticks_1st = truncation_Elogprops(self.m_var_sticks) # global sticks
         for doc in docs:
             old_lambda = self.m_lambda[:, word_list].copy()
             for iter in range(5):
@@ -190,18 +279,18 @@ class online_hdp:
         self.m_lambda_sum = np.sum(self.m_lambda, axis=1)
 
     def process_documents(self, docs, var_converge, unseen_ids=[], update=True, opt_o=True):
-        # Find the unique words in this mini-batch of documents...
+       
+        # can ignore for now since not using the adding_noise training option
         self.m_num_docs_parsed += len(docs)
         adding_noise = False
         adding_noise_point = min_adding_noise_point
-
         if self.m_adding_noise:
             if float(adding_noise_point) / len(docs) < min_adding_noise_ratio:
                 adding_noise_point = min_adding_noise_ratio * len(docs)
-
             if self.m_num_docs_parsed % adding_noise_point == 0:
                 adding_noise = True
 
+        # Find the unique words in this mini-batch of documents
         unique_words = dict()
         word_list = []
         if adding_noise:
@@ -214,9 +303,12 @@ class online_hdp:
                     if w not in unique_words:
                         unique_words[w] = len(unique_words)
                         word_list.append(w)
-        Wt = len(word_list) # length of words in these documents
+        # total number of unique words in these documents, 
+        # should be smaller than the total vocab size
+        Wt = len(word_list)  
 
-        # ...and do the lazy updates on the necessary columns of lambda
+        # do the lazy updates on the necessary columns of m_lambda i.e.
+        # the words in word_list. m_lambda_sum is actually always up-to-date.
         rw = np.array([self.m_r[t] for t in self.m_timestamp[word_list]])
         self.m_lambda[:, word_list] *= np.exp(self.m_r[-1] - rw)
         self.m_Elogbeta[:, word_list] = \
@@ -225,7 +317,7 @@ class online_hdp:
 
         ss = suff_stats(self.m_T, Wt, len(docs)) 
 
-        Elogsticks_1st = expect_log_sticks(self.m_var_sticks) # global sticks
+        Elogsticks_1st = truncation_Elogprops(self.m_var_sticks) # global sticks
 
         # run variational inference on some new docs
         score = 0.0
@@ -241,6 +333,7 @@ class online_hdp:
                 unseen_score += doc_score
                 unseen_count += doc.total
 
+        # can ignore for now since not using the adding_noise training option
         if adding_noise:
             # add noise to the ss
             print("adding noise at this stage...")
@@ -281,23 +374,49 @@ class online_hdp:
                    word_list, unique_words, var_converge, \
                    max_iter=100):
         """
-        e step for a single doc
+        e step for a single doc: coordinate ascent for the three
+        types of variational parameters, stopping when either the 
+        ELBO's progress is too small or maximum number of iterations
+        exceeded.
+        
+        Inputs:
+            doc: document Object (from corpus.py)
+            ss: suff_stats Object
+            Elogsticks_1st: (self.m_T,) vector, expected 
+                log-proportions of corpus' topics
+            word_list: list of unique words in a mini-batch
+                of documents that contains the doc in question
+            unique_words: dictionary, mapping words in word_list 
+                to their ordering.
+            var_converge: scalar, tolerance to stop coordinate 
+                ascent
+            max_iter: maximum coordinate ascent steps
+            
+        Outputs:
+            likelihood: ELBO of optimal parameters
         """
 
+        # the words in doc, doc.words, map to certain indices in 
+        # word_list; the map is given by unique_words, which is 
+        # a dictionary.
         batchids = [unique_words[id] for id in doc.words]
 
         Elogbeta_doc = self.m_Elogbeta[:, doc.words] 
-        ## very similar to the hdp equations
+        # v = variational params for document-level stick-breaking
+        # v has shape (2, self.m_K-1)
         v = np.zeros((2, self.m_K-1))  
         v[0] = 1.0
         v[1] = self.m_alpha
 
         # The following line is of no use.
-        Elogsticks_2nd = expect_log_sticks(v)
+        Elogsticks_2nd = truncation_Elogprops(v)
 
+        # phi = variational params for per-word topic assignments
+        # phi has shape (len(doc.words), self.m_K)
         # back to the uniform
         phi = np.ones((len(doc.words), self.m_K)) * 1.0/self.m_K
 
+        ## they really mean the EBLO when they use the variable "likelihood"
         likelihood = 0.0
         old_likelihood = -1e100
         converge = 1.0 
@@ -307,7 +426,8 @@ class online_hdp:
         # not yet support second level optimization yet, to be done in the future
         while iter < max_iter and (converge < 0.0 or converge > var_converge):
             ### update variational parameters
-            # var_phi 
+            # var_phi = variational parameter for document-level topic-to-topic
+            # var_phi has shape (self.m_K, self.m_T)
             if iter < 3:
                 var_phi = np.dot(phi.T,  (Elogbeta_doc * doc.counts).T)
                 (log_var_phi, log_norm) = utils.log_normalize(var_phi)
@@ -332,10 +452,10 @@ class online_hdp:
             v[0] = 1.0 + np.sum(phi_all[:,:self.m_K-1], 0)
             phi_cum = np.flipud(np.sum(phi_all[:,1:], 0))
             v[1] = self.m_alpha + np.flipud(np.cumsum(phi_cum))
-            Elogsticks_2nd = expect_log_sticks(v)
+            Elogsticks_2nd = truncation_Elogprops(v)
 
             likelihood = 0.0
-            # compute likelihood
+            # compute likelihood i.e. the ELBO
             # var_phi part/ C in john's notation
             likelihood += np.sum((Elogsticks_1st - log_var_phi) * var_phi)
 
@@ -363,6 +483,8 @@ class online_hdp:
         # update the suff_stat ss 
         # this time it only contains information from one doc
         ss.m_var_sticks_ss += np.sum(var_phi, 0)   
+        # avoid using a sufficient statistics matrix that is (self.m_T, self.m_W)
+        # saves time and memory
         ss.m_var_beta_ss[:, batchids] += np.dot(var_phi.T, phi.T * doc.counts)
 
         return(likelihood)
@@ -371,7 +493,7 @@ class online_hdp:
         
         self.m_status_up_to_date = False
         if len(word_list) == self.m_W:
-          self.m_status_up_to_date = True
+            self.m_status_up_to_date = True
         # rhot will be between 0 and 1, and says how much to weight
         # the information we got from this mini-batch.
         rhot = self.m_scale * pow(self.m_tau + self.m_updatect, -self.m_kappa)
@@ -453,29 +575,6 @@ class online_hdp:
                 self.m_lambda_sum[:, np.newaxis])
         
         # Elogbeta
-        
         Elogbeta = dirichlet_expectation(self.m_eta + self.m_lambda)
 
         return (alpha, beta, Elogbeta)
-
-    def infer_only(self, docs, half_train_half_test=False, split_ratio=0.9, iterative_average=False):
-        # be sure to run update_expectations()
-        sticks = self.m_var_sticks[0]/(self.m_var_sticks[0]+self.m_var_sticks[1])
-        alpha = np.zeros(self.m_T)
-        left = 1.0
-        for i in range(0, self.m_T-1):
-            alpha[i] = sticks[i] * left
-            left = left - alpha[i]
-        alpha[self.m_T-1] = left      
-        #alpha = alpha * self.m_gamma
-        score = 0.0
-        count = 0.0
-        for doc in docs:
-            if half_train_half_test:
-                (s, c, gamma) = lda_e_step_half(doc, alpha, self.m_Elogbeta, split_ratio) 
-                score += s
-                count += c
-            else:
-                score += lda_e_step(doc, alpha, np.exp(self.m_Elogbeta))
-                count += doc.total
-        return (score, count)
